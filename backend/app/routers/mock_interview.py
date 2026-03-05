@@ -26,6 +26,11 @@ from app.services.report_service import generate_pdf_report
 from app.services.practice_mode_service import practice_mode_service
 from app.services.data_collection_service import data_collection_service
 
+try:
+    from app.services.proctoring_service import proctor_manager
+except Exception:
+    proctor_manager = None
+
 router = APIRouter(prefix="/api/mock-interview", tags=["Mock Interview"])
 
 TECH_CUTOFF = 70.0
@@ -147,6 +152,10 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
     }
     result = await db.mock_sessions.insert_one(session_doc)
     session_id = str(result.inserted_id)
+
+    # Initialise proctoring session for identity verification & risk scoring
+    if proctor_manager is not None:
+        proctor_manager.get_or_create(session_id)
 
     # ── Fetch questions from user's previous sessions (same role) ──
     # This ensures a returning user gets fresh questions instead of repeats
@@ -710,6 +719,66 @@ async def get_proctoring_summary(
     }
 
 
+# ── Proctoring: Face Registration ─────────────────────
+
+class MockFaceRegisterRequest(BaseModel):
+    video_frame: str  # base64-encoded JPEG
+
+
+@router.post("/{session_id}/proctoring/register-face")
+async def register_mock_face(
+    session_id: str,
+    body: MockFaceRegisterRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Register a face frame for identity verification baseline during mock interview."""
+    db = get_database()
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    if proctor_manager is None:
+        return {"registered": False, "message": "Proctoring service unavailable"}
+
+    proctor_session = proctor_manager.get_or_create(session_id)
+    return proctor_session.register_face(body.video_frame)
+
+
+# ── Proctoring: Integrity Report ──────────────────────
+
+@router.get("/{session_id}/proctoring/integrity-report")
+async def get_mock_integrity_report(
+    session_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Generate a comprehensive integrity report for this mock interview."""
+    db = get_database()
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    if proctor_manager is None:
+        return {"error": "Proctoring service unavailable"}
+
+    proctor_session = proctor_manager.get(session_id)
+    if proctor_session is None:
+        proctoring = session.get("proctoring", {})
+        return {
+            "final_verdict": "UNKNOWN",
+            "integrity_score": max(0, 100 - (proctoring.get("gaze_violations", 0) * 3) -
+                                   (proctoring.get("multi_person_alerts", 0) * 15) -
+                                   (proctoring.get("tab_switches", 0) * 10)),
+            "violations": {"total_count": len(proctoring.get("violation_log", []))},
+            "message": "Report generated from stored data (session already ended)",
+        }
+
+    return proctor_session.generate_report()
+
+
 # ── Practice Mode: Live Metrics ───────────────────────
 
 class PracticeMetricsRequest(BaseModel):
@@ -868,5 +937,8 @@ async def _complete_session(db, session_id: str, session: dict):
         ai_service.cleanup_session(session_id)
         from app.services.rl_adaptation_service import rl_adaptation_service
         rl_adaptation_service.cleanup_session(session_id)
+        # Clean up proctoring session
+        if proctor_manager is not None:
+            proctor_manager.remove(session_id)
     except Exception:
         pass

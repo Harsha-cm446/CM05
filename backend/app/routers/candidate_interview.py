@@ -33,6 +33,11 @@ except Exception:
     multimodal_engine = None
     GazeStateMachine = None
 
+try:
+    from app.services.proctoring_service import proctor_manager
+except Exception:
+    proctor_manager = None
+
 # Per-candidate-session gaze FSMs (keyed by ai_session ObjectId string)
 _candidate_gaze_fsms = {}
 
@@ -272,6 +277,10 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
 
     result = await db.candidate_ai_sessions.insert_one(ai_session_doc)
     session_id = str(result.inserted_id)
+
+    # Initialise proctoring session for identity verification & risk scoring
+    if proctor_manager is not None:
+        proctor_manager.get_or_create(session_id)
 
     # Update candidate status
     await db.candidates.update_one(
@@ -858,6 +867,9 @@ async def _complete_candidate_session(db, ai_session: dict, candidate: dict, all
         rl_adaptation_service.cleanup_session(session_id)
         # Clean up gaze FSM for this candidate session
         _candidate_gaze_fsms.pop(session_id, None)
+        # Clean up proctoring session
+        if proctor_manager is not None:
+            proctor_manager.remove(session_id)
     except Exception:
         pass
 
@@ -945,12 +957,8 @@ class CandidateGazeAnalysisRequest(BaseModel):
 @router.post("/{token}/proctoring/analyze")
 async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest):
     """
-    Analyze a video frame for gaze direction and multi-person detection.
-    Token-based (no auth), used by CandidateJoin for live proctoring.
-
-    Uses the same real Haar-cascade eye-tracking + GazeStateMachine logic
-    that the student/practice mode uses — no estimation or jitter, only
-    actual CV2 gaze detection results are fed into the FSM.
+    Analyze a video frame for gaze direction, multi-person detection,
+    identity verification, suspicious objects, and risk scoring.
     """
     db = get_database()
     candidate = await _get_candidate_by_token(token)
@@ -969,34 +977,112 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
     gaze_fsm = _candidate_gaze_fsms[session_id]
     gaze_state_output = None
     person_count = 0
+    proctor_result = None
 
-    if body.video_frame and multimodal_engine is not None:
-        try:
-            # Real face + eye analysis (Haar cascade gaze estimation)
-            visual = multimodal_engine.analyze_face(body.video_frame)
+    if body.video_frame:
+        # ── Run full proctoring pipeline (identity + objects + risk) ──
+        if proctor_manager is not None:
+            proctor_session = proctor_manager.get_or_create(session_id)
+            try:
+                proctor_result = proctor_session.process_frame(body.video_frame)
+                person_count = proctor_result.get("person_count", 0)
+            except Exception as exc:
+                print(f"[PROCTOR] Exception: {exc}")
 
-            # Person count via YOLO / Haar fallback
-            person_count = multimodal_engine.detect_persons(body.video_frame)
+        # ── Run gaze FSM (existing logic) ──
+        if multimodal_engine is not None:
+            try:
+                visual = multimodal_engine.analyze_face(body.video_frame)
+                if proctor_result is None:
+                    person_count = multimodal_engine.detect_persons(body.video_frame)
 
-            # Extract the real eye_contact_score produced by _estimate_gaze
-            eye_contact_score = visual.get("eye_contact_score")
-            if eye_contact_score is not None:
-                # Feed actual gaze score into the FSM (same as practice mode)
-                gaze_state_output = gaze_fsm.update(eye_contact_score)
-            else:
+                eye_contact_score = visual.get("eye_contact_score")
+                if eye_contact_score is not None:
+                    gaze_state_output = gaze_fsm.update(eye_contact_score)
+                else:
+                    gaze_state_output = gaze_fsm.check_staleness()
+            except Exception as exc:
+                print(f"[CANDIDATE GAZE] Exception in video processing: {exc}")
                 gaze_state_output = gaze_fsm.check_staleness()
-
-        except Exception as exc:
-            print(f"[CANDIDATE GAZE] Exception in video processing: {exc}")
+        else:
             gaze_state_output = gaze_fsm.check_staleness()
     else:
-        # No video frame this tick — check for camera freeze / dropped frames
         gaze_state_output = gaze_fsm.check_staleness()
 
-    return {
+    response = {
         "gaze": gaze_state_output or {
             "state": gaze_fsm.state.value,
             "show_warning": gaze_fsm.show_warning,
         },
         "person_count": person_count,
     }
+
+    # Attach proctoring data if available
+    if proctor_result:
+        response["identity"] = proctor_result.get("identity")
+        response["suspicious_objects"] = proctor_result.get("suspicious_objects", [])
+        response["face_absent"] = proctor_result.get("face_absent", False)
+        response["attention"] = proctor_result.get("attention")
+        response["risk"] = proctor_result.get("risk")
+
+    return response
+
+
+# ── Proctoring: Face Registration ─────────────────────
+
+class CandidateFaceRegisterRequest(BaseModel):
+    video_frame: str  # base64-encoded JPEG
+
+
+@router.post("/{token}/proctoring/register-face")
+async def register_candidate_face(token: str, body: CandidateFaceRegisterRequest):
+    """Register a face frame for identity verification baseline.
+
+    Call 5-10 times at the start of the interview to build a reference embedding.
+    """
+    db = get_database()
+    await _get_candidate_by_token(token)
+    ai_session = await db.candidate_ai_sessions.find_one({"candidate_token": token})
+    if not ai_session:
+        raise HTTPException(status_code=404, detail="Interview not started")
+
+    session_id = str(ai_session["_id"])
+
+    if proctor_manager is None:
+        return {"registered": False, "message": "Proctoring service unavailable"}
+
+    proctor_session = proctor_manager.get_or_create(session_id)
+    result = proctor_session.register_face(body.video_frame)
+    return result
+
+
+# ── Proctoring: Integrity Report ──────────────────────
+
+@router.get("/{token}/proctoring/integrity-report")
+async def get_candidate_integrity_report(token: str):
+    """Generate a comprehensive integrity report for this candidate's interview."""
+    db = get_database()
+    await _get_candidate_by_token(token)
+    ai_session = await db.candidate_ai_sessions.find_one({"candidate_token": token})
+    if not ai_session:
+        raise HTTPException(status_code=404, detail="Interview not started")
+
+    session_id = str(ai_session["_id"])
+
+    if proctor_manager is None:
+        return {"error": "Proctoring service unavailable"}
+
+    proctor_session = proctor_manager.get(session_id)
+    if proctor_session is None:
+        # Session already cleaned up — return stored proctoring data
+        proctoring = ai_session.get("proctoring", {})
+        return {
+            "final_verdict": "UNKNOWN",
+            "integrity_score": max(0, 100 - (proctoring.get("gaze_violations", 0) * 3) -
+                                   (proctoring.get("multi_person_alerts", 0) * 15) -
+                                   (proctoring.get("tab_switches", 0) * 10)),
+            "violations": {"total_count": len(proctoring.get("violation_log", []))},
+            "message": "Report generated from stored data (session already ended)",
+        }
+
+    return proctor_session.generate_report()

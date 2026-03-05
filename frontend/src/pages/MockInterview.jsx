@@ -57,6 +57,16 @@ export default function MockInterview() {
   const [gazeState, setGazeState] = useState('ATTENTIVE');
   const [multiPersonAlert, setMultiPersonAlert] = useState(false);
 
+  // Face registration & enhanced proctoring
+  const [faceRegPhase, setFaceRegPhase] = useState('idle');
+  const [faceRegProgress, setFaceRegProgress] = useState(0);
+  const [identityVerified, setIdentityVerified] = useState(null);
+  const [identityMismatchAlert, setIdentityMismatchAlert] = useState(false);
+  const [riskScore, setRiskScore] = useState(0);
+  const [riskVerdict, setRiskVerdict] = useState('SAFE');
+  const [suspiciousObjects, setSuspiciousObjects] = useState([]);
+  const [faceAbsentAlert, setFaceAbsentAlert] = useState(false);
+
   // Proctoring state
   const [proctoringStats, setProctoringStats] = useState({
     gazeViolations: 0, multiPersonAlerts: 0, tabSwitches: 0, totalAwayTime: 0,
@@ -594,6 +604,22 @@ export default function MockInterview() {
         }
         // Multi-person detection
         setMultiPersonAlert((data.person_count ?? 0) > 1);
+
+        // Enhanced proctoring data
+        if (data.identity !== undefined) {
+          setIdentityVerified(data.identity?.verified ?? null);
+          setIdentityMismatchAlert(data.identity?.verified === false);
+        }
+        if (data.risk !== undefined) {
+          setRiskScore(data.risk.score ?? 0);
+          setRiskVerdict(data.risk.verdict ?? 'SAFE');
+        }
+        if (data.suspicious_objects) {
+          setSuspiciousObjects(data.suspicious_objects);
+        }
+        if (data.face_absent !== undefined) {
+          setFaceAbsentAlert(!!data.face_absent);
+        }
       } catch { /* ignore */ }
     };
 
@@ -714,10 +740,36 @@ export default function MockInterview() {
       setCurrentRound(res.data.round || 'Technical');
       setTimeStatus(res.data.time_status);
       setQuestionNumber(1);
-      setPhase('interview');
       setEvaluation(null);
       setAnswer('');
       setCodeText('');
+
+      // ── Face Registration Phase ──
+      setFaceRegPhase('registering');
+      setPhase('interview');
+      let regCount = 0;
+      const regTarget = 7;
+      const doRegister = async () => {
+        for (let i = 0; i < regTarget; i++) {
+          await new Promise(r => setTimeout(r, 700));
+          try {
+            const frame = captureVideoFrame();
+            if (!frame) continue;
+            const resp = await mockAPI.registerFace(res.data.session_id, frame);
+            if (resp.data?.registered) regCount++;
+            setFaceRegProgress(i + 1);
+          } catch { /* skip frame */ }
+        }
+        if (regCount >= 3) {
+          setFaceRegPhase('done');
+          toast.success('Face registered for identity verification', { duration: 3000 });
+        } else {
+          setFaceRegPhase('failed');
+          toast('Face registration limited — proctoring will still run', { icon: '⚠️', duration: 4000 });
+        }
+        setTimeout(() => setFaceRegPhase('done'), 5000);
+      };
+      doRegister();
     } catch (err) {
       toast.error('Failed to start interview');
     } finally {
@@ -1215,6 +1267,25 @@ export default function MockInterview() {
               </div>
             );
           })()}
+          {/* Identity & Risk */}
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><Shield size={10} /> Identity</span>
+            <span className={`text-[10px] font-bold ${identityVerified === null ? 'text-gray-500' : identityVerified ? 'text-green-400' : 'text-red-400'}`}>
+              {identityVerified === null ? 'Pending' : identityVerified ? 'Verified' : 'Mismatch!'}
+            </span>
+          </div>
+          {suspiciousObjects.length > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-gray-400 flex items-center gap-1"><AlertTriangle size={10} /> Objects</span>
+              <span className="text-[10px] font-bold text-orange-400">{suspiciousObjects.join(', ')}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><Shield size={10} /> Risk</span>
+            <span className={`text-[10px] font-bold ${riskVerdict === 'SAFE' ? 'text-green-400' : riskVerdict === 'SUSPICIOUS' ? 'text-yellow-400' : 'text-red-400'}`}>
+              {riskVerdict} ({riskScore})
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -1374,6 +1445,41 @@ export default function MockInterview() {
                 <div className="bg-purple-600/95 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg animate-pulse">
                   <MonitorX size={18} />
                   <span>Tab switch detected!</span>
+                </div>
+              </div>
+            )}
+            {identityMismatchAlert && (
+              <div className="absolute top-3 left-3 right-3 flex items-center justify-center">
+                <div className="bg-red-600/95 text-white px-4 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-2 animate-pulse shadow-lg">
+                  <Shield size={14} />
+                  <span>Identity mismatch detected!</span>
+                </div>
+              </div>
+            )}
+            {faceAbsentAlert && !eyeTrackAlert && (
+              <div className="absolute bottom-3 left-3 right-3 flex items-center justify-center">
+                <div className="bg-yellow-500/90 text-white px-4 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-2 animate-pulse shadow-lg">
+                  <AlertTriangle size={14} />
+                  <span>No face detected</span>
+                </div>
+              </div>
+            )}
+            {suspiciousObjects.length > 0 && (
+              <div className="absolute top-3 right-3">
+                <div className="bg-orange-600/90 text-white px-2 py-1 rounded-lg text-[10px] font-semibold">
+                  ⚠ {suspiciousObjects.join(', ')}
+                </div>
+              </div>
+            )}
+            {faceRegPhase === 'registering' && (
+              <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-2xl">
+                <div className="bg-white rounded-xl p-4 text-center shadow-lg">
+                  <Loader2 className="animate-spin mx-auto mb-2 text-cyan-600" size={24} />
+                  <p className="text-sm font-semibold text-gray-800">Registering face...</p>
+                  <p className="text-xs text-gray-500 mt-1">Frame {faceRegProgress}/7</p>
+                  <div className="mt-2 h-1.5 bg-gray-200 rounded-full overflow-hidden w-28 mx-auto">
+                    <div className="h-full bg-cyan-500 rounded-full transition-all" style={{ width: `${(faceRegProgress / 7) * 100}%` }} />
+                  </div>
                 </div>
               </div>
             )}

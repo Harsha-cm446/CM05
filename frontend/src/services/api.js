@@ -60,6 +60,8 @@ export const mockAPI = {
   // Proctoring
   logViolation: (sessionId, data) => api.post(`/mock-interview/${sessionId}/proctoring/violation`, data),
   getProctoringSummary: (sessionId) => api.get(`/mock-interview/${sessionId}/proctoring/summary`),
+  registerFace: (sessionId, videoFrame) => api.post(`/mock-interview/${sessionId}/proctoring/register-face`, { video_frame: videoFrame }),
+  getIntegrityReport: (sessionId) => api.get(`/mock-interview/${sessionId}/proctoring/integrity-report`),
 };
 
 // ── Practice Mode ────────────────────────────────────
@@ -128,6 +130,8 @@ export const candidateAPI = {
   logViolation: (token, data) => api.post(`/candidate-interview/${token}/proctoring/violation`, data),
   getProctoringSummary: (token) => api.get(`/candidate-interview/${token}/proctoring/summary`),
   analyzeFrame: (token, videoFrame) => api.post(`/candidate-interview/${token}/proctoring/analyze`, { video_frame: videoFrame || null }),
+  registerFace: (token, videoFrame) => api.post(`/candidate-interview/${token}/proctoring/register-face`, { video_frame: videoFrame }),
+  getIntegrityReport: (token) => api.get(`/candidate-interview/${token}/proctoring/integrity-report`),
 };
 
 export default api;
