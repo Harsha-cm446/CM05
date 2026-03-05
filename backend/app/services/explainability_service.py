@@ -442,7 +442,7 @@ class ExplainabilityService:
             },
             "eye_contact": {
                 "threshold": 0.5,
-                "suggestion": "Look directly at the camera during video interviews. Place a sticky note near it as a reminder.",
+                "suggestion": "Stay focused on the screen during the interview. Avoid looking away for extended periods.",
                 "priority": "low",
                 "category": "Non-verbal",
             },

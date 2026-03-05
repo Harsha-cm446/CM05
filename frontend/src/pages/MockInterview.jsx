@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { mockAPI } from '../services/api';
+import { mockAPI, WS_BASE } from '../services/api';
 import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, ArrowRight, Clock, Code,
@@ -70,7 +70,7 @@ export default function MockInterview() {
   const isSubmittingRef = useRef(false);      // prevent double-submit
   const answerRef = useRef('');               // track answer for silence-submit
   const submitRef = useRef(null);            // always-latest submit function ref
-  const SILENCE_TIMEOUT = 3500;               // ms of silence before auto-submit
+  const SILENCE_TIMEOUT = 5500;               // ms of silence before auto-submit
 
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -79,6 +79,13 @@ export default function MockInterview() {
   const recognitionRef = useRef(null);
   const timeIntervalRef = useRef(null);
   const synthRef = useRef(window.speechSynthesis);
+
+  // Vosk STT WebSocket refs
+  const sttWsRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const audioProcessorRef = useRef(null);
+  const sttStreamRef = useRef(null);
+  const [sttEngine, setSttEngine] = useState('');
 
   // Keep answerRef in sync with answer state
   useEffect(() => { answerRef.current = answer; }, [answer]);
@@ -89,7 +96,11 @@ export default function MockInterview() {
     // Stop listening while AI speaks
     if (recognitionRef.current) {
       autoListenRef.current = false;
-      recognitionRef.current.stop();
+      if (recognitionRef.current.engine === 'vosk') {
+        stopVoskStreaming();
+      } else {
+        recognitionRef.current.stop?.();
+      }
       recognitionRef.current = null;
       setIsRecording(false);
     }
@@ -117,14 +128,124 @@ export default function MockInterview() {
     synthRef.current.speak(utterance);
   }, [ttsEnabled]);
 
-  // ── Speech-to-text (Web Speech API) — Live Conversation Mode ──
-  const startSpeechRecognition = useCallback(() => {
+  // ── Speech-to-text — Vosk server-side (primary) with Web Speech API fallback ──
+
+  const connectSttWebSocket = useCallback(() => {
+    if (sttWsRef.current && sttWsRef.current.readyState <= 1) return sttWsRef.current;
+
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsBase = WS_BASE || `${proto}://${window.location.hostname}:8000`;
+    const ws = new WebSocket(`${wsBase}/ws/stt`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'ready') {
+          setSttEngine('vosk');
+        } else if (data.type === 'partial' || data.type === 'final') {
+          const newAnswer = data.full_text || data.text || '';
+          if (newAnswer) {
+            setAnswer(newAnswer);
+            answerRef.current = newAnswer;
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = setTimeout(() => {
+              if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
+                autoListenRef.current = false;
+                stopSpeechRecognition();
+                if (submitRef.current) submitRef.current();
+              }
+            }, SILENCE_TIMEOUT);
+          }
+        }
+      } catch (e) { console.error('STT WS parse error:', e); }
+    };
+
+    ws.onerror = () => console.warn('STT WebSocket error — will fall back to Web Speech API');
+    ws.onclose = () => { sttWsRef.current = null; };
+    sttWsRef.current = ws;
+    return ws;
+  }, []);
+
+  const startVoskStreaming = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      sttStreamRef.current = stream;
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      audioContextRef.current = audioContext;
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      audioProcessorRef.current = processor;
+      processor.onaudioprocess = (e) => {
+        if (sttWsRef.current && sttWsRef.current.readyState === WebSocket.OPEN) {
+          const float32 = e.inputBuffer.getChannelData(0);
+          const int16 = new Int16Array(float32.length);
+          for (let i = 0; i < float32.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32[i]));
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          sttWsRef.current.send(int16.buffer);
+        }
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      return true;
+    } catch (e) {
+      console.error('Failed to start Vosk audio streaming:', e);
+      return false;
+    }
+  }, []);
+
+  const stopVoskStreaming = useCallback(() => {
+    if (sttWsRef.current && sttWsRef.current.readyState === WebSocket.OPEN) {
+      try { sttWsRef.current.send(JSON.stringify({ type: 'eof' })); } catch {}
+    }
+    if (audioProcessorRef.current) { audioProcessorRef.current.disconnect(); audioProcessorRef.current = null; }
+    if (audioContextRef.current) { audioContextRef.current.close().catch(() => {}); audioContextRef.current = null; }
+    if (sttStreamRef.current) { sttStreamRef.current.getTracks().forEach(t => t.stop()); sttStreamRef.current = null; }
+  }, []);
+
+  const startSpeechRecognition = useCallback(async () => {
     if (recognitionRef.current || isSubmittingRef.current) return;
+
+    // Try Vosk WebSocket first
+    const ws = connectSttWebSocket();
+    const waitForWs = () => new Promise((resolve) => {
+      if (ws.readyState === WebSocket.OPEN) return resolve(true);
+      const timeout = setTimeout(() => resolve(false), 2000);
+      ws.addEventListener('open', () => { clearTimeout(timeout); resolve(true); }, { once: true });
+      ws.addEventListener('error', () => { clearTimeout(timeout); resolve(false); }, { once: true });
+    });
+
+    const wsReady = await waitForWs();
+    if (wsReady) {
+      const started = await startVoskStreaming();
+      if (started) {
+        try { ws.send(JSON.stringify({ type: 'reset' })); } catch {}
+        recognitionRef.current = { engine: 'vosk' };
+        setIsRecording(true);
+        setSttEngine('vosk');
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = setTimeout(() => {
+          if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
+            autoListenRef.current = false;
+            stopSpeechRecognition();
+            if (submitRef.current) submitRef.current();
+          }
+        }, SILENCE_TIMEOUT);
+        return;
+      }
+    }
+
+    // Fallback: Web Speech API
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       toast.error('Speech recognition not supported in this browser');
       return;
     }
+    setSttEngine('web-speech');
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -132,19 +253,16 @@ export default function MockInterview() {
 
     let finalTranscript = answerRef.current;
 
-    // Reset silence timer whenever we get speech
     const resetSilenceTimer = () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = setTimeout(() => {
-        // Silence detected — auto-submit if there's an answer
         if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
           autoListenRef.current = false;
           if (recognitionRef.current) {
-            recognitionRef.current.stop();
+            recognitionRef.current.stop?.();
             recognitionRef.current = null;
           }
           setIsRecording(false);
-          // Use ref to always call the latest submit function (avoids stale closure)
           if (submitRef.current) submitRef.current();
         }
       }, SILENCE_TIMEOUT);
@@ -163,7 +281,6 @@ export default function MockInterview() {
       const newAnswer = finalTranscript.trim() + (interim ? ' ' + interim : '');
       setAnswer(newAnswer);
       answerRef.current = newAnswer;
-      // User is speaking — reset the silence timer
       resetSilenceTimer();
     };
 
@@ -176,7 +293,6 @@ export default function MockInterview() {
     recognition.onend = () => {
       setIsRecording(false);
       recognitionRef.current = null;
-      // Auto-restart if we're still in conversation mode and not submitting
       if (autoListenRef.current && !isSubmittingRef.current) {
         setTimeout(() => {
           if (autoListenRef.current && !isSubmittingRef.current) {
@@ -190,25 +306,27 @@ export default function MockInterview() {
       recognition.start();
       recognitionRef.current = recognition;
       setIsRecording(true);
-      // Start silence timer (handles case where user doesn't speak at all)
       resetSilenceTimer();
     } catch (e) {
       console.error('Failed to start recognition:', e);
     }
-  }, []);
+  }, [connectSttWebSocket, startVoskStreaming]);
 
   const stopSpeechRecognition = useCallback(() => {
     autoListenRef.current = false;
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    if (recognitionRef.current?.engine === 'vosk') {
+      stopVoskStreaming();
+      recognitionRef.current = null;
+      setIsRecording(false);
+      return;
     }
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      recognitionRef.current.stop?.();
       recognitionRef.current = null;
     }
     setIsRecording(false);
-  }, []);
+  }, [stopVoskStreaming]);
 
   const toggleRecording = useCallback(() => {
     if (isRecording) {
@@ -309,11 +427,18 @@ export default function MockInterview() {
     return () => {
       autoListenRef.current = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      sttStreamRef.current?.getTracks().forEach((t) => t.stop());
       synthRef.current.cancel();
-      if (recognitionRef.current) recognitionRef.current.stop();
+      if (recognitionRef.current?.engine === 'vosk') {
+        if (audioProcessorRef.current) audioProcessorRef.current.disconnect();
+        if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
+      } else if (recognitionRef.current) {
+        recognitionRef.current.stop?.();
+      }
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       clearInterval(timeIntervalRef.current);
       clearInterval(localTickRef.current);
+      if (sttWsRef.current) sttWsRef.current.close();
     };
   }, []);
 
@@ -383,7 +508,7 @@ export default function MockInterview() {
       mockAPI.logViolation(sessionId, {
         violation_type: 'gaze_away',
         duration_sec: Math.round(duration * 10) / 10,
-        details: `Looked away for ${Math.round(duration)}s`,
+        details: `Looked away from screen for ${Math.round(duration)}s`,
       }).catch(() => {});
     }
   }, [eyeTrackAlert, gazeState, phase, sessionId]);
@@ -1159,7 +1284,7 @@ export default function MockInterview() {
               <div className="absolute inset-0 flex items-center justify-center bg-red-900/40 backdrop-blur-[2px] animate-pulse">
                 <div className="bg-red-600/90 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg">
                   <Eye size={18} />
-                  <span>Look at the camera</span>
+                  <span>Please look at the screen</span>
                 </div>
               </div>
             )}

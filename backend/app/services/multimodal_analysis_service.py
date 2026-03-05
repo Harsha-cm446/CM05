@@ -66,19 +66,22 @@ print(f"[MULTIMODAL] CV2={CV2_AVAILABLE} DeepFace={DEEPFACE_AVAILABLE} YOLO={YOL
 
 class GazeState(str, Enum):
     """Possible states of the gaze monitoring FSM."""
-    ATTENTIVE = "ATTENTIVE"               # Candidate is looking at the camera
-    WARNING_ACTIVE = "WARNING_ACTIVE"     # Sustained gaze deviation → show warning
-    RECOVERING = "RECOVERING"             # Gaze returning, not yet stable
+    ATTENTIVE = "ATTENTIVE"               # Candidate is looking at the screen
+    WARNING_ACTIVE = "WARNING_ACTIVE"     # Sustained gaze away from screen → show warning
+    RECOVERING = "RECOVERING"             # Gaze returning to screen, not yet stable
 
 
 class GazeStateMachine:
     """
-    Finite-state-machine for robust eye-contact monitoring.
+    Finite-state-machine for robust screen-attention monitoring.
 
     Design principles:
+      • "Looking at the screen" is the acceptable state — candidates naturally
+        read questions, type code, and look at the UI, not directly at the camera.
+      • A violation only triggers when the candidate looks AWAY from the screen
+        entirely (face not visible, head turned far to the side, etc.).
       • No state change on a single frame — uses a rolling window percentage.
       • Separate timers for deviation and recovery — never reused across states.
-      • Time thresholds prevent flicker on rapid head movements.
       • Handles frame drops and camera freeze via a staleness timeout.
 
     States & transitions:
@@ -94,7 +97,7 @@ class GazeStateMachine:
         deviation_hold_sec:  Seconds of sustained "away" before WARNING_ACTIVE (2.5)
         recovery_entry_sec:  Seconds of sustained "looking" to enter RECOVERING (0.5)
         recovery_full_sec:   Seconds of sustained "looking" to reach ATTENTIVE (1.5)
-        gaze_threshold:      Score below which a frame counts as "looking away" (45.0)
+        gaze_threshold:      Score below which a frame counts as "looking away from screen" (45.0)
         stale_timeout_sec:   If no frame arrives for this long, assume away (4.0)
     """
 
@@ -119,7 +122,7 @@ class GazeStateMachine:
         self._gaze_threshold = gaze_threshold
         self._stale_timeout = stale_timeout_sec
 
-        # Rolling window of booleans: True = looking at camera
+        # Rolling window of booleans: True = looking at screen
         self._frame_window: deque = deque(maxlen=window_size)
 
         # FSM state
@@ -197,7 +200,7 @@ class GazeStateMachine:
             self._deviation_start = None
 
             if is_looking:
-                # Still looking at camera — continue recovery timer
+                # Still looking at screen — continue recovery timer
                 if self._recovery_start is None:
                     self._recovery_start = now
 
@@ -453,14 +456,23 @@ class MultimodalAnalysisEngine:
         return round(stability, 1)
 
     def _estimate_gaze(self, frame: np.ndarray) -> float:
-        """Estimate eye contact / gaze direction using eye detection.
+        """Estimate whether the candidate is looking at their screen.
 
-        Strategy:
-        1. Detect face with Haar cascade (more lenient params to reduce false negatives)
-        2. Within face ROI, detect eyes with eye cascade
-        3. If face found but no eyes detected → looking away → LOW score
-        4. If eyes found, check iris position (centering) → gaze score
-        5. Also penalise if face itself is off-centre (head turned)
+        Strategy — "screen-aware" gaze detection:
+          • Looking at the screen (reading question, typing code) is ACCEPTABLE.
+          • The camera sits above/beside the screen, so a candidate reading the
+            question will NOT look directly into the camera — this is normal.
+          • We only flag a violation when the candidate looks AWAY from the
+            screen entirely (face turned far to the side, face not visible,
+            or head dropped out of frame).
+
+        Scoring rules:
+          1. Face detected + eyes visible (≥1) → looking at screen → HIGH score
+          2. Face detected + no eyes (could be blinking or glancing down at
+             keyboard momentarily) → borderline → MEDIUM score
+          3. Face detected but heavily off-centre (>40% offset) → turned away
+             from screen → LOW score
+          4. No face detected at all → not looking at screen → VERY LOW score
         """
         if not CV2_AVAILABLE or self._face_cascade is None:
             print(f"[GAZE] Skipping gaze — CV2={CV2_AVAILABLE} face_cascade={'loaded' if self._face_cascade else 'None'}")
@@ -469,10 +481,6 @@ class MultimodalAnalysisEngine:
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # FIX: More lenient detection params to reduce missed faces
-            # scaleFactor 1.1 (was 1.3) — finer pyramid steps
-            # minNeighbors 3 (was 5) — less strict confirmation
-            # minSize (40,40) (was (60,60)) — catch smaller/farther faces
             faces = self._face_cascade.detectMultiScale(
                 gray, scaleFactor=1.1, minNeighbors=3, minSize=(40, 40)
             )
@@ -480,30 +488,34 @@ class MultimodalAnalysisEngine:
             print(f"[GAZE] frame shape={frame.shape}, faces found={len(faces)}")
 
             if len(faces) == 0:
-                # No face at all — definitely not looking at camera
+                # No face at all — candidate has left the screen area
                 raw_score = 10.0
             else:
                 (fx, fy, fw, fh) = faces[0]
 
-                # ── Signal 1: Face centering (head turned?) ────────
+                # ── Signal 1: Face position — is the face in the screen area? ──
+                # The camera is above/beside the screen. If the face is roughly
+                # in frame, the candidate is looking at the screen area.
+                # Only penalise when face is FAR off to the side (head turned
+                # completely away from screen).
                 frame_cx = frame.shape[1] / 2
                 face_cx = fx + fw / 2
                 face_offset = abs(face_cx - frame_cx) / frame_cx  # 0 = centered, 1 = edge
-                # Aggressive penalty — even a small offset means gaze is shifting
-                face_center_score = max(0, 100 - face_offset * 200)
 
-                # ── Signal 2: Eye detection within face ROI ────────
+                # Gentle penalty — only flag extreme offsets (>40% = head fully turned)
+                if face_offset > 0.40:
+                    face_position_score = max(0, 100 - (face_offset - 0.40) * 300)
+                else:
+                    # Face is in the screen area — no penalty
+                    face_position_score = 100.0
+
+                # ── Signal 2: Eye detection (are eyes open / visible?) ──────
                 eye_score = 0.0
                 eyes_detected = False
 
                 if self._eye_cascade is not None:
-                    # Look for eyes in the UPPER half of the face region
                     eye_roi_gray = gray[fy:fy + int(fh * 0.65), fx:fx + fw]
 
-                    # FIX: More lenient eye detection params
-                    # scaleFactor 1.05 (was 1.1) — finer steps for small eyes
-                    # minNeighbors 3 (was 4) — less strict
-                    # minSize (15,15) (was (20,20)) — catch smaller eyes
                     eyes = self._eye_cascade.detectMultiScale(
                         eye_roi_gray,
                         scaleFactor=1.05,
@@ -512,49 +524,31 @@ class MultimodalAnalysisEngine:
                     )
 
                     if len(eyes) >= 2:
-                        # Both eyes visible → likely looking at camera
+                        # Both eyes visible — candidate is facing the screen
                         eyes_detected = True
-
-                        # Check eye symmetry — if both eyes are roughly
-                        # at similar Y and symmetrically placed in the face,
-                        # person is looking forward
-                        eyes_sorted = sorted(eyes, key=lambda e: e[0])  # sort by x
-                        e1 = eyes_sorted[0]
-                        e2 = eyes_sorted[1]
-
-                        # Horizontal symmetry: both eyes equally spaced from face centre
-                        e1_cx = (e1[0] + e1[2] / 2) / fw  # normalised 0..1
-                        e2_cx = (e2[0] + e2[2] / 2) / fw
-                        mid = (e1_cx + e2_cx) / 2
-                        symmetry_offset = abs(mid - 0.5)  # 0 = perfectly centred
-
-                        # Vertical alignment: both eyes at similar height
-                        e1_cy = e1[1] + e1[3] / 2
-                        e2_cy = e2[1] + e2[3] / 2
-                        y_diff = abs(e1_cy - e2_cy) / fh
-
-                        if symmetry_offset < 0.10 and y_diff < 0.08:
-                            eye_score = 90.0  # looking straight at camera
-                        elif symmetry_offset < 0.15:
-                            eye_score = 55.0  # slightly off-centre gaze
-                        else:
-                            eye_score = 20.0  # eyes asymmetric → looking aside
+                        eye_score = 90.0  # looking at screen = good
 
                     elif len(eyes) == 1:
-                        # Only one eye visible → partially turned away
+                        # One eye visible — could be reading at an angle,
+                        # still looking at the screen area
                         eyes_detected = True
-                        eye_score = 15.0
+                        eye_score = 75.0  # acceptable — still on screen
+
                     else:
-                        # No eyes detected in face ROI → looking away or eyes closed
-                        eye_score = 10.0
+                        # No eyes detected — could be looking down at keyboard
+                        # briefly or blinking. Face is still there, so not a
+                        # major violation.
+                        eye_score = 45.0
 
                 # ── Combine signals ────────────────────────────────
                 if eyes_detected:
-                    # Weight: 50% eye analysis, 50% face centering
-                    raw_score = eye_score * 0.5 + face_center_score * 0.5
+                    # Face + eyes visible → looking at screen → high score
+                    # Weight: 60% eye presence, 40% face position
+                    raw_score = eye_score * 0.6 + face_position_score * 0.4
                 else:
-                    # Face found but no eyes — heavily penalise
-                    raw_score = min(face_center_score * 0.2, 20.0)
+                    # Face visible but no eyes — still acceptable if face
+                    # is in the screen area (momentary glance at keyboard etc.)
+                    raw_score = eye_score * 0.4 + face_position_score * 0.6
 
             # ── Temporal smoothing (lighter — 70/30 to keep responsiveness) ──
             recent_scores = [
@@ -1043,7 +1037,7 @@ class MultimodalAnalysisEngine:
             )
         if avg_attention < 50:
             recommendations.append(
-                "Maintain steady eye contact with the camera. Place a sticky note near it as a reminder."
+                "Maintain focus on the screen during the interview. Avoid looking away for extended periods."
             )
         if avg_clarity < 50:
             recommendations.append(

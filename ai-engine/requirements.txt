@@ -1,5 +1,7 @@
 opencv-python-headless==4.8.1.78
 deepface==0.0.89
+vosk>=0.3.45
+faster-whisper>=1.0.0
 openai-whisper==20231117
 sentence-transformers==2.2.2
 scikit-learn

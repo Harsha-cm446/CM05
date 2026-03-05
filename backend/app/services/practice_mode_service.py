@@ -105,8 +105,8 @@ class PracticeModeService:
             "Slow down a bit. Speaking too fast can increase perceived stress.",
         ],
         "low_attention": [
-            "Try to look directly at the camera to maintain eye contact.",
-            "Your gaze seems to wander. Focus on the interviewer (camera).",
+            "Keep your focus on the screen to maintain engagement.",
+            "Your gaze seems to wander away from the screen. Stay focused on the interview.",
             "Stay present. Take a moment to re-center before answering.",
         ],
         "poor_structure": [

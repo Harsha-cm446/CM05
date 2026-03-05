@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
-from app.routers import auth, interviews, mock_interview, websocket, candidate_interview, practice_mode, analytics, data_collection
+from app.routers import auth, interviews, mock_interview, websocket, candidate_interview, practice_mode, analytics, data_collection, stt_websocket
 from app.services.ai_service import ai_service
 
 
@@ -75,6 +75,7 @@ app.include_router(websocket.router)
 app.include_router(practice_mode.router)
 app.include_router(analytics.router)
 app.include_router(data_collection.router)
+app.include_router(stt_websocket.router)
 
 
 # ── Health check ──────────────────────────────────────
