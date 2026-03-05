@@ -849,6 +849,12 @@ async def update_practice_metrics(
         "suggestion": result.get("suggestion") if has_text else None,
         "gaze": result.get("gaze"),
         "person_count": result.get("person_count", 0),
+        # Enhanced proctoring data (from proctoring_service via practice_mode_service)
+        "identity": result.get("identity"),
+        "suspicious_objects": result.get("suspicious_objects", []),
+        "face_absent": result.get("face_absent", False),
+        "attention": result.get("attention"),
+        "risk": result.get("risk"),
     }
 
 

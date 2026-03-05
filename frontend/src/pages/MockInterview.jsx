@@ -521,39 +521,30 @@ export default function MockInterview() {
     };
   }, [phase, sessionId]);
 
-  // ── Log gaze violations to backend ──
+  // ── Track gaze violations locally (backend proctoring_service already logs them) ──
   useEffect(() => {
     if (phase !== 'interview' || !sessionId) return;
 
     if (eyeTrackAlert && gazeState === 'WARNING_ACTIVE') {
-      // Gaze violation started
       if (!gazeWarningStartRef.current) {
         gazeWarningStartRef.current = Date.now();
         setProctoringStats(prev => ({ ...prev, gazeViolations: prev.gazeViolations + 1 }));
       }
     } else if (gazeWarningStartRef.current) {
-      // Gaze violation ended — log duration
       const duration = (Date.now() - gazeWarningStartRef.current) / 1000;
       gazeWarningStartRef.current = null;
       setProctoringStats(prev => ({ ...prev, totalAwayTime: prev.totalAwayTime + duration }));
-      mockAPI.logViolation(sessionId, {
-        violation_type: 'gaze_away',
-        duration_sec: Math.round(duration * 10) / 10,
-        details: `Looked away from screen for ${Math.round(duration)}s`,
-      }).catch(() => {});
+      // No need to call logViolation — proctoring_service.process_frame() already
+      // logs gaze_away violations with richer data (confidence, risk points, thumbnails)
     }
   }, [eyeTrackAlert, gazeState, phase, sessionId]);
 
-  // ── Log multi-person alerts to backend ──
+  // ── Track multi-person alerts locally (backend proctoring_service already logs them) ──
   useEffect(() => {
     if (phase !== 'interview' || !sessionId || !multiPersonAlert) return;
-
     setProctoringStats(prev => ({ ...prev, multiPersonAlerts: prev.multiPersonAlerts + 1 }));
-    mockAPI.logViolation(sessionId, {
-      violation_type: 'multi_person',
-      duration_sec: 0,
-      details: 'Multiple persons detected in camera',
-    }).catch(() => {});
+    // No need to call logViolation — proctoring_service.process_frame() already
+    // logs multiple_persons violations with richer data
   }, [multiPersonAlert, phase, sessionId]);
 
   // ── Re-attach camera stream when video element mounts ──
@@ -580,10 +571,11 @@ export default function MockInterview() {
     }
   }, [cameraOn]);
 
-  // ── Gaze monitoring: ALWAYS runs during interview (independent of answer text) ──
+  // ── Unified polling: gaze + proctoring + live metrics (every 2s) ──
+  // Merges the old separate gaze-only (2s) and live-metrics (3s) loops
+  // into a single loop to avoid double-processing frames on the backend.
   useEffect(() => {
     if (phase !== 'interview' || !sessionId || !cameraOn) {
-      // Clear warning when not actively monitoring
       if (phase !== 'interview') {
         setEyeTrackAlert(false);
         setGazeState('ATTENTIVE');
@@ -591,18 +583,21 @@ export default function MockInterview() {
       return;
     }
 
-    const pollGaze = async () => {
+    const pollUnified = async () => {
       try {
         const videoFrame = captureVideoFrame();
-        if (!videoFrame) return; // No frame available
-        // Send frame with empty text — backend will still process gaze FSM
-        const { data } = await mockAPI.getPracticeMetrics(sessionId, '', videoFrame);
+        if (!videoFrame) return;
+        // Always send partial answer text so backend can compute live metrics in one call
+        const currentAnswer = answerRef.current || '';
+        const { data } = await mockAPI.getPracticeMetrics(sessionId, currentAnswer, videoFrame);
+
+        // Gaze FSM
         if (data.gaze) {
           console.log('[GAZE]', data.gaze.state, 'warn:', data.gaze.show_warning, 'score:', data.gaze.gaze_score, 'look%:', data.gaze.looking_pct);
           setGazeState(data.gaze.state || 'ATTENTIVE');
           setEyeTrackAlert(!!data.gaze.show_warning);
         }
-        // Multi-person detection
+        // Multi-person
         setMultiPersonAlert((data.person_count ?? 0) > 1);
 
         // Enhanced proctoring data
@@ -620,45 +615,25 @@ export default function MockInterview() {
         if (data.face_absent !== undefined) {
           setFaceAbsentAlert(!!data.face_absent);
         }
+
+        // Live metrics (only if there's enough text)
+        if (currentAnswer.trim().length >= 5) {
+          if (data.metrics) {
+            setLiveMetrics(data.metrics);
+            setMetricsHistory(prev => [
+              ...prev.slice(-59),
+              { time: prev.length + 1, confidence: data.metrics.confidence, stress: data.metrics.stress, clarity: data.metrics.speech_clarity },
+            ]);
+          }
+          if (data.suggestion) setMicroSuggestion(data.suggestion);
+        }
       } catch { /* ignore */ }
     };
 
-    pollGaze();
-    const gazeInterval = setInterval(pollGaze, 2000);
-    return () => clearInterval(gazeInterval);
-  }, [phase, sessionId, cameraOn, captureVideoFrame]);
-
-  // ── Live metrics polling (runs during interview, uses answerRef to avoid churn) ──
-  useEffect(() => {
-    if (phase !== 'interview' || !sessionId) return;
-
-    const fetchMetrics = async () => {
-      const currentAnswer = answerRef.current;
-      if (!currentAnswer || currentAnswer.trim().length < 5) return; // skip until enough text
-      try {
-        const videoFrame = captureVideoFrame();
-        const { data } = await mockAPI.getPracticeMetrics(sessionId, currentAnswer, videoFrame);
-        if (data.metrics) {
-          setLiveMetrics(data.metrics);
-          setMetricsHistory(prev => [
-            ...prev.slice(-59),
-            { time: prev.length + 1, confidence: data.metrics.confidence, stress: data.metrics.stress, clarity: data.metrics.speech_clarity },
-          ]);
-        }
-        if (data.suggestion) setMicroSuggestion(data.suggestion);
-        // Also update gaze from this richer response
-        if (data.gaze) {
-          setGazeState(data.gaze.state || 'ATTENTIVE');
-          setEyeTrackAlert(!!data.gaze.show_warning);
-        }
-        // Multi-person detection
-        setMultiPersonAlert((data.person_count ?? 0) > 1);
-      } catch { /* polling error — ignore */ }
-    };
-
-    const interval = setInterval(fetchMetrics, 3000);
+    pollUnified();
+    const interval = setInterval(pollUnified, 2000);
     return () => clearInterval(interval);
-  }, [phase, sessionId, captureVideoFrame]);
+  }, [phase, sessionId, cameraOn, captureVideoFrame]);
 
   // ── Track scores for chart ─────────────────────────
   useEffect(() => {

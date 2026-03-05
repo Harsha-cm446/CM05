@@ -48,15 +48,16 @@ except (ImportError, ValueError, Exception) as e:
     DEEPFACE_AVAILABLE = False
     print(f"\u26a0\ufe0f DeepFace unavailable: {e}")
 
+# YOLO person detection now handled by proctoring_service.ObjectDetectionEngine
+# to avoid loading the model twice into memory.
 try:
-    from ultralytics import YOLO
-    _yolo_model = YOLO("yolov8n.pt")
-    YOLO_AVAILABLE = True
+    from app.services.proctoring_service import proctor_manager
+    PROCTOR_AVAILABLE = proctor_manager is not None
 except Exception:
-    _yolo_model = None
-    YOLO_AVAILABLE = False
+    proctor_manager = None
+    PROCTOR_AVAILABLE = False
 
-print(f"[MULTIMODAL] CV2={CV2_AVAILABLE} DeepFace={DEEPFACE_AVAILABLE} YOLO={YOLO_AVAILABLE}")
+print(f"[MULTIMODAL] CV2={CV2_AVAILABLE} DeepFace={DEEPFACE_AVAILABLE} PROCTOR={PROCTOR_AVAILABLE}")
 
 
 
@@ -573,31 +574,28 @@ class MultimodalAnalysisEngine:
             return 15.0  # Below threshold so FSM treats as "away"
 
     def detect_persons(self, frame_b64: str) -> int:
-        """Count the number of persons visible using YOLOv8.
+        """Count the number of persons visible.
 
-        Returns the person count (class 0 = 'person' in COCO).
-        If YOLO is unavailable, falls back to Haar face count.
+        Delegates to proctoring_service.ObjectDetectionEngine to avoid
+        loading a duplicate YOLO model. Falls back to Haar cascade.
         """
         if not CV2_AVAILABLE:
             return 0
 
         try:
+            # Delegate to proctoring service's shared YOLO model
+            if PROCTOR_AVAILABLE and proctor_manager is not None:
+                from app.services.proctoring_service import ObjectDetectionEngine
+                detector = ObjectDetectionEngine()
+                result = detector.detect(frame_b64)
+                return result.person_count
+
+            # Fallback: Haar cascade face count (no YOLO loaded here)
             img_bytes = base64.b64decode(frame_b64)
             nparr = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if frame is None:
                 return 0
-
-            if YOLO_AVAILABLE and _yolo_model is not None:
-                results = _yolo_model(frame, verbose=False)
-                person_count = 0
-                for r in results:
-                    for box in r.boxes:
-                        if int(box.cls[0]) == 0 and float(box.conf[0]) >= 0.45:
-                            person_count += 1
-                return person_count
-
-            # Fallback: Haar cascade face count
             if self._face_cascade is not None:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = self._face_cascade.detectMultiScale(

@@ -27,6 +27,10 @@ except Exception as e:
     multimodal_engine = None
     GazeStateMachine = None
     print(f"\u26a0\ufe0f Multimodal analysis unavailable in practice mode: {e}")
+try:
+    from app.services.proctoring_service import proctor_manager
+except Exception:
+    proctor_manager = None
 from app.services.explainability_service import explainability_service
 from app.services.development_roadmap_service import development_roadmap_service
 
@@ -225,15 +229,26 @@ class PracticeModeService:
         gaze_fsm = self._gaze_fsms.get(session_id)
         gaze_state_output = None
         person_count = 0
+        proctor_result = None
 
-        # Process multimodal inputs if available
+        # ── Run proctoring pipeline (identity + objects + risk + person count) ──
+        if video_frame is not None and proctor_manager is not None:
+            try:
+                proctor_session = proctor_manager.get_or_create(session_id)
+                proctor_result = proctor_session.process_frame(video_frame)
+                person_count = proctor_result.get("person_count", 0)
+            except Exception as exc:
+                print(f"[PRACTICE] Proctor exception: {exc}")
+
+        # Process multimodal inputs for gaze FSM + live metrics
         if video_frame is not None and multimodal_engine is not None:
             try:
                 visual = multimodal_engine.analyze_face(video_frame)
                 print(f"[PRACTICE] analyze_face => face_detected={visual.get('face_detected')} eye_contact_score={visual.get('eye_contact_score')}")
 
-                # YOLO / Haar person count
-                person_count = multimodal_engine.detect_persons(video_frame)
+                # Person count from proctoring pipeline; fallback to Haar cascade
+                if proctor_result is None:
+                    person_count = multimodal_engine.detect_persons(video_frame)
 
                 if visual.get("face_detected"):
                     # Real face analysis data available (DeepFace succeeded)
@@ -356,6 +371,12 @@ class PracticeModeService:
             "suggestion": suggestion,
             "gaze": gaze_state_output or gaze_fallback,
             "person_count": person_count,
+            # Enhanced proctoring data (from proctoring_service)
+            "identity": proctor_result.get("identity") if proctor_result else None,
+            "suspicious_objects": proctor_result.get("suspicious_objects", []) if proctor_result else [],
+            "face_absent": proctor_result.get("face_absent", False) if proctor_result else False,
+            "attention": proctor_result.get("attention") if proctor_result else None,
+            "risk": proctor_result.get("risk") if proctor_result else None,
         }
 
     def _generate_micro_suggestion(self, metrics: Dict[str, float]) -> Optional[str]:

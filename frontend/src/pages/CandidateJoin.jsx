@@ -635,7 +635,7 @@ export default function CandidateJoin() {
     };
   }, [phase, token]);
 
-  // ── Log gaze violations to backend ──
+  // ── Track gaze violations locally (backend proctoring_service already logs them) ──
   useEffect(() => {
     if (phase !== 'interview' || !token) return;
 
@@ -648,23 +648,17 @@ export default function CandidateJoin() {
       const duration = (Date.now() - gazeWarningStartRef.current) / 1000;
       gazeWarningStartRef.current = null;
       setProctoringStats(prev => ({ ...prev, totalAwayTime: prev.totalAwayTime + duration }));
-      candidateAPI.logViolation(token, {
-        violation_type: 'gaze_away',
-        duration_sec: Math.round(duration * 10) / 10,
-        details: `Looked away from screen for ${Math.round(duration)}s`,
-      }).catch(() => {});
+      // No need to call logViolation — proctoring_service.process_frame() already
+      // logs gaze_away violations with richer data (confidence, risk points, thumbnails)
     }
   }, [eyeTrackAlert, gazeState, phase, token]);
 
-  // ── Log multi-person alerts to backend ──
+  // ── Track multi-person alerts locally (backend proctoring_service already logs them) ──
   useEffect(() => {
     if (phase !== 'interview' || !token || !multiPersonAlert) return;
     setProctoringStats(prev => ({ ...prev, multiPersonAlerts: prev.multiPersonAlerts + 1 }));
-    candidateAPI.logViolation(token, {
-      violation_type: 'multi_person',
-      duration_sec: 0,
-      details: 'Multiple persons detected in camera',
-    }).catch(() => {});
+    // No need to call logViolation — proctoring_service.process_frame() already
+    // logs multiple_persons violations with richer data
   }, [multiPersonAlert, phase, token]);
 
   // ── Video frame capture helper ──

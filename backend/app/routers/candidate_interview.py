@@ -989,12 +989,11 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
             except Exception as exc:
                 print(f"[PROCTOR] Exception: {exc}")
 
-        # ── Run gaze FSM (existing logic) ──
+        # ── Run gaze FSM (existing logic — only for eye_contact_score → FSM) ──
+        # Person count already obtained from proctor_result above; no need to call detect_persons
         if multimodal_engine is not None:
             try:
                 visual = multimodal_engine.analyze_face(body.video_frame)
-                if proctor_result is None:
-                    person_count = multimodal_engine.detect_persons(body.video_frame)
 
                 eye_contact_score = visual.get("eye_contact_score")
                 if eye_contact_score is not None:
