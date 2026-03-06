@@ -49,6 +49,8 @@ class ModelRegistry:
         self._api_call_success = 0
         self._api_call_fail = 0
         self._last_call_ts: Optional[float] = None
+        self._last_error: Optional[str] = None
+        self._last_error_type: Optional[str] = None
 
         # Build ordered model list: primary (Groq) first, then fallbacks
         self._model_chain = [settings.GROQ_MODEL]
@@ -229,7 +231,9 @@ class ModelRegistry:
             except Exception as e:
                 self._api_call_fail += 1
                 last_error = e
-                print(f"[llm_generate] EXCEPTION model={model_name}: {type(e).__name__}: {e}")
+                self._last_error = str(e)[:500]
+                self._last_error_type = type(e).__name__
+                print(f"[llm_generate] EXCEPTION model={model_name}: {self._last_error_type}: {self._last_error}")
                 if self._is_auth_error(e):
                     logger.error(
                         f"Groq AUTH ERROR ({model_name}): {e}  — "
@@ -273,6 +277,8 @@ class ModelRegistry:
                 _dt.datetime.fromtimestamp(self._last_call_ts).isoformat()
                 if self._last_call_ts else None
             ),
+            "last_error": self._last_error,
+            "last_error_type": self._last_error_type,
         }
 
 
