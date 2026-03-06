@@ -168,6 +168,47 @@ async def groq_test():
         }
 
 
+@app.get("/api/diagnostics/groq-raw")
+async def groq_raw_test():
+    """Raw Groq SDK test — bypasses llm_generate error handling to expose exact errors."""
+    import asyncio, time as _time, traceback
+    from app.core.config import settings
+    result = {"groq_key_len": len(settings.GROQ_API_KEY) if settings.GROQ_API_KEY else 0}
+    if not settings.GROQ_API_KEY:
+        result["error"] = "GROQ_API_KEY is empty"
+        return result
+    try:
+        from groq import Groq
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        result["client_created"] = True
+    except Exception as e:
+        result["client_error"] = f"{type(e).__name__}: {e}"
+        return result
+    t0 = _time.time()
+    try:
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model=settings.GROQ_MODEL,
+            messages=[{"role": "user", "content": "Say hello in one word"}],
+            temperature=0.1,
+            max_tokens=10,
+        )
+        elapsed = round(_time.time() - t0, 2)
+        text = response.choices[0].message.content if response.choices else ""
+        result["status"] = "ok" if text else "empty_choices"
+        result["response"] = text
+        result["elapsed_seconds"] = elapsed
+        result["model"] = settings.GROQ_MODEL
+        result["choices_count"] = len(response.choices) if response.choices else 0
+    except Exception as e:
+        elapsed = round(_time.time() - t0, 2)
+        result["status"] = "error"
+        result["error"] = str(e)
+        result["error_type"] = type(e).__name__
+        result["traceback"] = traceback.format_exc()[-500:]
+        result["elapsed_seconds"] = elapsed
+        result["model"] = settings.GROQ_MODEL
+    return result
 @app.get("/api/diagnostics/proctoring")
 async def proctoring_diagnostics():
     """Check whether proctoring dependencies (DeepFace, YOLO, OpenCV) are available."""
