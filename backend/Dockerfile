@@ -16,16 +16,7 @@ COPY . .
 # Uses the smaller model for Docker deployments (40MB vs 1.8GB)
 # Set VOSK_MODEL_NAME env var to override at runtime
 ENV VOSK_MODEL_NAME=vosk-model-small-en-us-0.15
-RUN python -c "\
-try:\
-    from vosk import Model, SetLogLevel;\
-    SetLogLevel(-1);\
-    print('Downloading Vosk model...');\
-    m = Model(model_name='vosk-model-small-en-us-0.15');\
-    print('Vosk model ready');\
-except Exception as e:\
-    print(f'Vosk model pre-download skipped: {e}')\
-"
+RUN printf 'try:\n from vosk import Model, SetLogLevel\n SetLogLevel(-1)\n print("Downloading Vosk model...")\n m = Model(model_name="vosk-model-small-en-us-0.15")\n print("Vosk model ready")\nexcept Exception as e:\n print("Vosk model pre-download skipped: " + str(e))\n' | python
 
 EXPOSE 8000
 
