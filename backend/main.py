@@ -131,12 +131,12 @@ async def groq_test():
     """Live test: generate a sample question via Groq to verify the API key works."""
     from app.services.model_registry import model_registry
     import time as _time
-    stats = model_registry.get_stats()
-    if not stats["groq_key_configured"]:
+    pre_stats = model_registry.get_stats()
+    if not pre_stats["groq_key_configured"]:
         return {
             "status": "error",
             "error": "GROQ_API_KEY is not configured. Set it as an environment variable.",
-            **stats,
+            **pre_stats,
         }
     t0 = _time.time()
     try:
@@ -147,21 +147,24 @@ async def groq_test():
             max_tokens=150,
         )
         elapsed = round(_time.time() - t0, 2)
+        post_stats = model_registry.get_stats()
         return {
             "status": "ok" if result else "empty_response",
             "response_length": len(result),
             "response_preview": result[:300] if result else None,
             "elapsed_seconds": elapsed,
             "model_used": model_registry.active_model,
-            **stats,
+            **post_stats,
         }
     except Exception as e:
         elapsed = round(_time.time() - t0, 2)
+        post_stats = model_registry.get_stats()
         return {
             "status": "error",
             "error": str(e),
+            "error_type": type(e).__name__,
             "elapsed_seconds": elapsed,
-            **stats,
+            **post_stats,
         }
 
 
