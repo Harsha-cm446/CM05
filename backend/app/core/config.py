@@ -37,10 +37,11 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = ""
 
-    # Groq LLM
-    GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GROQ_FALLBACK_MODELS: str = "llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b,openai/gpt-oss-20b,groq/compound-mini"
+    # Gemini LLM (multi-key fallback)
+    GEMINI_API_KEY: str = ""
+    GEMINI_FALLBACK_API_KEYS: str = ""  # comma-separated extra keys from different accounts
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_FALLBACK_MODELS: str = "gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-2.5-flash-lite,gemini-3.1-pro-preview,gemini-2.5-pro"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"
@@ -54,9 +55,9 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Startup diagnostic — print only if GROQ key is missing
-if not settings.GROQ_API_KEY:
-    print(f"⚠️  GROQ_API_KEY is empty! Searched .env files: {[str(p) for p in _ENV_CANDIDATES]}")
+# Startup diagnostic — print only if Gemini key is missing
+if not settings.GEMINI_API_KEY:
+    print(f"⚠️  GEMINI_API_KEY is empty! Searched .env files: {[str(p) for p in _ENV_CANDIDATES]}")
     print(f"   Resolved .env: {_ENV_FILE}")
 else:
-    print(f"✅ Config loaded from {_ENV_FILE} (GROQ key: {settings.GROQ_API_KEY[:8]}...)")
+    print(f"✅ Config loaded from {_ENV_FILE} (Gemini key: {settings.GEMINI_API_KEY[:8]}...)")

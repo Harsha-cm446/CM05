@@ -86,7 +86,8 @@ Add these secrets:
 | `AZURE_CREDENTIALS` | The full JSON from Step 2 |
 | `MONGODB_URL` | Your MongoDB Atlas connection string from Step 1 |
 | `JWT_SECRET_KEY` | A random string (run `openssl rand -hex 32` to generate) |
-| `GROQ_API_KEY` | Your Groq API key |
+| `GEMINI_API_KEY` | Your primary Google Gemini API key |
+| `GEMINI_FALLBACK_API_KEYS` | Comma-separated fallback Gemini keys from other accounts |
 | `SMTP_HOST` | SMTP server hostname (e.g. `smtp.gmail.com`) |
 | `SMTP_PORT` | SMTP port (e.g. `587`) |
 | `SMTP_USER` | SMTP username / email address |

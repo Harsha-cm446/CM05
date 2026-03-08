@@ -3,7 +3,7 @@ AI Interview Engine — Optimized Performance Architecture
 ─────────────────────────────────────────────────────────
 Optimizations:
   • Model warm-loading at startup (not per-request)
-  • Groq API (llama-3.3-70b-versatile) for fast LLM inference
+  • Gemini API (gemini-2.5-flash) with multi-key fallback for LLM inference
   • Two-phase evaluation: instant score (<2s) + background deep analysis
   • Parallel evaluation with asyncio.gather()
   • Reduced LLM calls: local scoring for similarity/keywords/communication
@@ -64,9 +64,14 @@ QUESTION VARIETY (mix these types across the interview):
 - System design: "How would you architect a system that..."
 
 IDEAL ANSWER QUALITY:
-- The ideal_answer must be a detailed, expert-level response (not generic)
-- Include specific technologies, patterns, metrics, or frameworks where applicable
-- For HR questions, include STAR method structure in the ideal answer
+- The ideal_answer must be CONCISE yet insightful (2-4 sentences MAX for non-coding, 5-10 lines MAX for coding)
+- Write like a confident professional speaking naturally in an interview — NOT an essay or textbook
+- Use first-person, conversational language: "In my experience...", "What I'd do here is...", "I've found that..."
+- NO bullet points, NO numbered lists, NO headers — just natural flowing speech
+- Include ONE specific example, technology, or metric to show depth (not a laundry list)
+- For HR questions, weave STAR naturally: "When I was at X, we faced Y, so I did Z, and the result was..."
+- For coding questions, show clean working code with brief inline comments — no lengthy explanations
+- Think: "How would a senior engineer actually answer this in a real interview?" — brief, confident, specific
 """
 
 
@@ -114,17 +119,17 @@ class AIService:
             from app.services.model_registry import model_registry
             model_registry.warm_up()
 
-            if model_registry.groq_client:
-                print(f"  ✅ Groq configured (model: {settings.GROQ_MODEL})")
+            if model_registry.gemini_client:
+                print(f"  ✅ Gemini configured (model: {settings.GEMINI_MODEL}, keys: {model_registry.total_keys})")
             else:
-                print("  ⚠️ GROQ_API_KEY not set — LLM calls will return empty results")
+                print("  ⚠️ GEMINI_API_KEY not set — LLM calls will return empty results")
 
             self._warmed_up = True
             print("✅ AI Engine ready — models will load on first use")
 
     async def shutdown(self):
         """Cleanup on app shutdown."""
-        pass  # Groq SDK doesn't require explicit cleanup
+        pass  # Gemini SDK doesn't require explicit cleanup
 
     @property
     def embedding_model(self) -> Any:
@@ -134,14 +139,14 @@ class AIService:
     # ── LLM helpers ─────────────────────────────────
 
     async def _llm_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Groq API with automatic model fallback on quota errors.
+        """Call Gemini API with automatic model + key fallback on quota errors.
         fast=True uses lower token limit."""
         from app.services.model_registry import model_registry
         full_system = MASTER_SYSTEM_PROMPT + "\n\n" + system
         result = await model_registry.llm_generate(prompt, full_system, fast=fast)
         if not result:
-            print(f"[AIService] ⚠️ Groq returned empty — fallback will be used. "
-                  f"Key configured: {bool(model_registry.groq_client)}, "
+            print(f"[AIService] ⚠️ Gemini returned empty — fallback will be used. "
+                  f"Key configured: {bool(model_registry.gemini_client)}, "
                   f"Active model: {model_registry.active_model}")
         return result
 
@@ -357,7 +362,7 @@ Return ONLY a JSON object:
             coding_instruction = """
 This must be a CODING question. Ask the candidate to write code to solve a specific problem.
 Include in the question: the problem statement, expected input/output, and any constraints.
-The ideal_answer should contain a working code solution.
+The ideal_answer should contain clean working code with brief comments (no lengthy explanations).
 Set "is_coding": true in the response."""
 
         # Add randomization seed for variety across sessions
@@ -392,7 +397,7 @@ CRITICAL RULES:
    - "How would you optimize a slow database query?"
    - "Tell me about a time you resolved a team conflict."
 4. BAD questions are overly long, multi-part, or contain unnecessary context.
-5. The ideal_answer should be a concise model answer (3-5 sentences).
+5. The ideal_answer should be a HUMANIZED, conversational answer (2-4 sentences) — like a confident professional speaking naturally. Use first-person ("I", "In my experience..."). NO bullet points.
 6. Create a UNIQUE question DIFFERENT from all previously asked questions.
 7. Approach this from the angle of: {chosen_angle}.
 
@@ -402,7 +407,7 @@ Return ONLY a JSON object in this exact format:
 {{
   "round": "{round_type}",
   "question": "Your SHORT interview question here (1-2 sentences max)",
-  "ideal_answer": "Concise ideal answer (3-5 sentences)",
+  "ideal_answer": "Short humanized answer in first-person (2-4 sentences, conversational tone)",
   "evaluation_keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
   "difficulty_level": "{difficulty}",
   "is_coding": false,
@@ -930,6 +935,9 @@ Return ONLY a JSON object:
                 "ideal_answer": q_doc.get("ideal_answer", ""),
                 "round": round_type,
                 "difficulty": q_doc.get("difficulty", "medium"),
+                "is_coding": q_doc.get("is_coding", False),
+                "code_text": resp.get("code_text", ""),
+                "code_language": resp.get("code_language", ""),
                 "scores": {
                     "content_score": ev.get("content_score", 0),
                     "keyword_score": ev.get("keyword_score", ev.get("keyword_coverage", 0)),

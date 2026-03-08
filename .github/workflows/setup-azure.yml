@@ -99,15 +99,15 @@ jobs:
                 JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}" \
                 JWT_ALGORITHM="HS256" \
                 ACCESS_TOKEN_EXPIRE_MINUTES="1440" \
-                GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
-                GROQ_MODEL="llama-3.3-70b-versatile" \
+                GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+                GEMINI_MODEL="gemini-2.5-flash" \
                 FRONTEND_URL="https://placeholder.azurecontainerapps.io" \
                 SMTP_HOST="${{ secrets.SMTP_HOST }}" \
                 SMTP_PORT="${{ secrets.SMTP_PORT }}" \
                 SMTP_USER="${{ secrets.SMTP_USER }}" \
                 SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
                 EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
-              && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "GROQ_FALLBACK_MODELS=llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b,openai/gpt-oss-20b,groq/compound-mini" \
+              && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "GEMINI_FALLBACK_API_KEYS=${{ secrets.GEMINI_FALLBACK_API_KEYS }}" "GEMINI_FALLBACK_MODELS=gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-2.5-flash-lite,gemini-3.1-pro-preview,gemini-2.5-pro" \
               && echo "✅ Backend created!" && break \
               || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
           done

@@ -635,6 +635,11 @@ export default function InterviewReport() {
                 }`}>
                   {qe.round || 'Technical'}
                 </span>
+                {qe.is_coding && (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-orange-100 text-orange-700">
+                    Coding
+                  </span>
+                )}
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                   qe.difficulty === 'hard' ? 'bg-red-100 text-red-700'
                     : qe.difficulty === 'easy' ? 'bg-green-100 text-green-700'
@@ -658,14 +663,26 @@ export default function InterviewReport() {
               </div>
             </summary>
             <div className="px-6 pb-6 space-y-3 border-t border-gray-100 pt-4">
+              {/* Your Answer — code or text */}
               <div>
-                <p className="text-xs font-medium text-gray-500 uppercase">Your Answer</p>
-                <p className="text-sm text-gray-700 mt-1">{qe.answer}</p>
+                <p className="text-xs font-medium text-gray-500 uppercase">
+                  Your Answer {qe.is_coding && qe.code_language && <span className="ml-1 text-orange-500">({qe.code_language})</span>}
+                </p>
+                {qe.is_coding && qe.code_text ? (
+                  <pre className="mt-1 bg-gray-900 text-green-400 rounded-lg p-4 overflow-x-auto text-sm font-mono leading-relaxed whitespace-pre-wrap"><code>{qe.code_text}</code></pre>
+                ) : (
+                  <p className="text-sm text-gray-700 mt-1">{qe.answer}</p>
+                )}
               </div>
+              {/* Ideal Answer */}
               {qe.ideal_answer && (
                 <div>
                   <p className="text-xs font-medium text-gray-500 uppercase">Ideal Answer</p>
-                  <p className="text-sm text-gray-700 mt-1">{qe.ideal_answer}</p>
+                  {qe.is_coding && qe.ideal_answer.includes('\n') ? (
+                    <pre className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-x-auto text-sm font-mono leading-relaxed whitespace-pre-wrap text-gray-800"><code>{qe.ideal_answer}</code></pre>
+                  ) : (
+                    <p className="text-sm text-gray-700 mt-1 whitespace-pre-line">{qe.ideal_answer}</p>
+                  )}
                 </div>
               )}
               <div>

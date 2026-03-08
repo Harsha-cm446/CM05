@@ -1588,14 +1588,67 @@ export default function MockInterview() {
                   ))}
                 </select>
               </div>
-              <textarea
-                value={codeText}
-                onChange={(e) => setCodeText(e.target.value)}
-                rows={12}
-                placeholder="Write your code here..."
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none resize-none font-mono text-sm bg-gray-900 text-green-400"
-                spellCheck={false}
-              />
+              <div className="relative border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-primary-500">
+                {/* Line numbers */}
+                <div className="absolute left-0 top-0 bottom-0 w-10 bg-gray-800 border-r border-gray-700 text-gray-500 text-xs font-mono pt-3 text-right pr-2 select-none overflow-hidden leading-[1.375rem]">
+                  {(codeText || '').split('\n').map((_, i) => (
+                    <div key={i}>{i + 1}</div>
+                  ))}
+                </div>
+                <textarea
+                  value={codeText}
+                  onChange={(e) => setCodeText(e.target.value)}
+                  onKeyDown={(e) => {
+                    const ta = e.target;
+                    const { selectionStart, selectionEnd, value } = ta;
+                    // Tab key — insert 2 spaces or indent selection
+                    if (e.key === 'Tab') {
+                      e.preventDefault();
+                      if (e.shiftKey) {
+                        const lineStart = value.lastIndexOf('\n', selectionStart - 1) + 1;
+                        const lineText = value.substring(lineStart, selectionStart);
+                        const spaces = lineText.match(/^ {1,2}/)?.[0]?.length || 0;
+                        if (spaces > 0) {
+                          const newVal = value.substring(0, lineStart) + value.substring(lineStart + spaces);
+                          setCodeText(newVal);
+                          requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = selectionStart - spaces; });
+                        }
+                      } else {
+                        const newVal = value.substring(0, selectionStart) + '  ' + value.substring(selectionEnd);
+                        setCodeText(newVal);
+                        requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = selectionStart + 2; });
+                      }
+                    }
+                    // Enter — auto-indent to match previous line
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const lineStart = value.lastIndexOf('\n', selectionStart - 1) + 1;
+                      const indent = value.substring(lineStart).match(/^(\s*)/)[1];
+                      const charBefore = value[selectionStart - 1];
+                      const extra = ['{', '(', '[', ':'].includes(charBefore) ? '  ' : '';
+                      const insertion = '\n' + indent + extra;
+                      const newVal = value.substring(0, selectionStart) + insertion + value.substring(selectionEnd);
+                      setCodeText(newVal);
+                      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = selectionStart + insertion.length; });
+                    }
+                    // Auto-close brackets
+                    const pairs = { '{': '}', '(': ')', '[': ']', "'": "'", '"': '"', '`': '`' };
+                    if (pairs[e.key]) {
+                      e.preventDefault();
+                      const close = pairs[e.key];
+                      const newVal = value.substring(0, selectionStart) + e.key + close + value.substring(selectionEnd);
+                      setCodeText(newVal);
+                      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = selectionStart + 1; });
+                    }
+                  }}
+                  rows={14}
+                  placeholder="Write your code here..."
+                  className="w-full pl-12 pr-4 py-3 border-0 outline-none resize-none font-mono text-sm bg-gray-900 text-green-400 leading-[1.375rem]"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+              </div>
               <button
                 onClick={submitAnswer}
                 disabled={loading || !codeText.trim()}

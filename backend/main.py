@@ -2,7 +2,7 @@
 AI Interview Platform — Optimized Main Application
 ────────────────────────────────────────────────────
   • AI models warm-loaded at startup for < 3s interview start
-  • Groq API (llama-3.3-70b-versatile) for LLM inference
+  • Gemini API (gemini-2.5-flash) with multi-key fallback for LLM inference
   • CORS allows all origins for public access
   • Bind to 0.0.0.0 for network-wide access
 """
@@ -30,16 +30,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ AI warm-up failed (non-fatal): {e}")
 
-    # Startup diagnostics — log Groq key status so Azure logs show if it's configured
-    groq_key = settings.GROQ_API_KEY
-    print(f"🔑 GROQ_API_KEY configured: {bool(groq_key)}, length: {len(groq_key) if groq_key else 0}")
-    if groq_key:
-        print(f"   Key prefix: {groq_key[:8]}...")
+    # Startup diagnostics — log Gemini key status so Azure logs show if it's configured
+    gemini_key = settings.GEMINI_API_KEY
+    print(f"🔑 GEMINI_API_KEY configured: {bool(gemini_key)}, length: {len(gemini_key) if gemini_key else 0}")
+    if gemini_key:
+        print(f"   Key prefix: {gemini_key[:8]}...")
     else:
-        print(f"   ⚠️ GROQ_API_KEY is EMPTY — questions will use static fallbacks!")
+        print(f"   ⚠️ GEMINI_API_KEY is EMPTY — questions will use static fallbacks!")
         import os
-        all_env_keys = [k for k in os.environ if 'GROQ' in k.upper()]
-        print(f"   Environment vars containing 'GROQ': {all_env_keys}")
+        all_env_keys = [k for k in os.environ if 'GEMINI' in k.upper()]
+        print(f"   Environment vars containing 'GEMINI': {all_env_keys}")
 
 
     # Pre-download and cache the Vosk STT model at startup
@@ -127,27 +127,27 @@ async def health():
     return {
         "status": "healthy",
         "ai_warmed": ai_service._warmed_up,
-        "llm_model": settings.GROQ_MODEL,
+        "llm_model": settings.GEMINI_MODEL,
     }
 
 
-@app.get("/api/diagnostics/groq")
-async def groq_diagnostics():
-    """Show Groq API call statistics for this server instance."""
+@app.get("/api/diagnostics/gemini")
+async def gemini_diagnostics():
+    """Show Gemini API call statistics for this server instance."""
     from app.services.model_registry import model_registry
     return model_registry.get_stats()
 
 
-@app.get("/api/diagnostics/groq-test")
-async def groq_test():
-    """Live test: generate a sample question via Groq to verify the API key works."""
+@app.get("/api/diagnostics/gemini-test")
+async def gemini_test():
+    """Live test: generate a sample question via Gemini to verify the API key works."""
     from app.services.model_registry import model_registry
     import time as _time
     pre_stats = model_registry.get_stats()
-    if not pre_stats["groq_key_configured"]:
+    if not pre_stats["gemini_primary_key_set"]:
         return {
             "status": "error",
-            "error": "GROQ_API_KEY is not configured. Set it as an environment variable.",
+            "error": "GEMINI_API_KEY is not configured. Set it as an environment variable.",
             **pre_stats,
         }
     t0 = _time.time()
@@ -166,6 +166,7 @@ async def groq_test():
             "response_preview": result[:300] if result else None,
             "elapsed_seconds": elapsed,
             "model_used": model_registry.active_model,
+            "key_used": model_registry.active_key_index,
             **post_stats,
         }
     except Exception as e:
@@ -180,18 +181,19 @@ async def groq_test():
         }
 
 
-@app.get("/api/diagnostics/groq-raw")
-async def groq_raw_test():
-    """Raw Groq SDK test — bypasses llm_generate error handling to expose exact errors."""
+@app.get("/api/diagnostics/gemini-raw")
+async def gemini_raw_test():
+    """Raw Gemini SDK test — bypasses llm_generate error handling to expose exact errors."""
     import asyncio, time as _time, traceback
     from app.core.config import settings
-    result = {"groq_key_len": len(settings.GROQ_API_KEY) if settings.GROQ_API_KEY else 0}
-    if not settings.GROQ_API_KEY:
-        result["error"] = "GROQ_API_KEY is empty"
+    from google import genai
+
+    result = {"gemini_key_len": len(settings.GEMINI_API_KEY) if settings.GEMINI_API_KEY else 0}
+    if not settings.GEMINI_API_KEY:
+        result["error"] = "GEMINI_API_KEY is empty"
         return result
     try:
-        from groq import Groq
-        client = Groq(api_key=settings.GROQ_API_KEY)
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
         result["client_created"] = True
     except Exception as e:
         result["client_error"] = f"{type(e).__name__}: {e}"
@@ -199,19 +201,17 @@ async def groq_raw_test():
     t0 = _time.time()
     try:
         response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=settings.GROQ_MODEL,
-            messages=[{"role": "user", "content": "Say hello in one word"}],
-            temperature=0.1,
-            max_tokens=10,
+            client.models.generate_content,
+            model=settings.GEMINI_MODEL,
+            contents="Say hello in one word",
+            config={"temperature": 0.1, "max_output_tokens": 200},
         )
         elapsed = round(_time.time() - t0, 2)
-        text = response.choices[0].message.content if response.choices else ""
-        result["status"] = "ok" if text else "empty_choices"
+        text = response.text if response and response.text else ""
+        result["status"] = "ok" if text else "empty_response"
         result["response"] = text
         result["elapsed_seconds"] = elapsed
-        result["model"] = settings.GROQ_MODEL
-        result["choices_count"] = len(response.choices) if response.choices else 0
+        result["model"] = settings.GEMINI_MODEL
     except Exception as e:
         elapsed = round(_time.time() - t0, 2)
         result["status"] = "error"
@@ -219,24 +219,24 @@ async def groq_raw_test():
         result["error_type"] = type(e).__name__
         result["traceback"] = traceback.format_exc()[-500:]
         result["elapsed_seconds"] = elapsed
-        result["model"] = settings.GROQ_MODEL
+        result["model"] = settings.GEMINI_MODEL
     return result
 
 
-@app.get("/api/diagnostics/groq-models")
-async def groq_models_test():
-    """Try every model in the fallback chain and report which ones work."""
+@app.get("/api/diagnostics/gemini-models")
+async def gemini_models_test():
+    """Try every model in the fallback chain across all keys and report which work."""
     import asyncio, time as _time
     from app.core.config import settings
-    from groq import Groq
+    from google import genai
 
-    if not settings.GROQ_API_KEY:
-        return {"error": "GROQ_API_KEY is empty"}
+    if not settings.GEMINI_API_KEY:
+        return {"error": "GEMINI_API_KEY is empty"}
 
-    client = Groq(api_key=settings.GROQ_API_KEY)
-    models = [settings.GROQ_MODEL]
-    if settings.GROQ_FALLBACK_MODELS:
-        for m in settings.GROQ_FALLBACK_MODELS.split(","):
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    models = [settings.GEMINI_MODEL]
+    if settings.GEMINI_FALLBACK_MODELS:
+        for m in settings.GEMINI_FALLBACK_MODELS.split(","):
             m = m.strip()
             if m and m not in models:
                 models.append(m)
@@ -246,13 +246,12 @@ async def groq_models_test():
         t0 = _time.time()
         try:
             response = await asyncio.to_thread(
-                client.chat.completions.create,
+                client.models.generate_content,
                 model=model_name,
-                messages=[{"role": "user", "content": "Say hello in one word"}],
-                temperature=0.1,
-                max_tokens=10,
+                contents="Say hello in one word",
+                config={"temperature": 0.1, "max_output_tokens": 200},
             )
-            text = response.choices[0].message.content if response.choices else ""
+            text = response.text if response and response.text else ""
             results[model_name] = {
                 "status": "ok" if text else "empty",
                 "response": text,

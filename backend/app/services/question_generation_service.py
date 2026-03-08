@@ -33,7 +33,7 @@ Architecture:
   └──────────────────┘
 
 Training Architecture (LoRA Fine-Tuning):
-  Base Model: Groq llama-3.3-70b-versatile
+  Base Model: Gemini 2.5 Flash (google-generativeai)
   Adapter: LoRA (rank=16, alpha=32)
   Dataset: Interview question-answer pairs per category
   Evaluation: BLEU, ROUGE-L, Question Quality Score
@@ -110,21 +110,21 @@ class QuestionGenerationService:
         return model_registry.embedding_model
 
     @property
-    def groq_client(self):
+    def gemini_client(self):
         from app.services.model_registry import model_registry
-        return model_registry.groq_client
+        return model_registry.gemini_client
 
     async def _llm_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Groq API with automatic model fallback on quota errors."""
+        """Call Gemini API with automatic model + key fallback on quota errors."""
         from app.services.model_registry import model_registry
-        max_tokens = 400 if fast else 600
+        max_tokens = 1024 if fast else 2048
         result = await model_registry.llm_generate(prompt, system, fast=fast, max_tokens=max_tokens)
         if not result:
-            print(f"[QuestionGen] ⚠️ Groq returned empty — will use template fallback. "
-                  f"Key configured: {bool(model_registry.groq_client)}, "
+            print(f"[QuestionGen] ⚠️ Gemini returned empty — will use template fallback. "
+                  f"Key configured: {bool(model_registry.gemini_client)}, "
                   f"Active model: {model_registry.active_model}")
         else:
-            print(f"[QuestionGen] ✅ Groq generated {len(result)} chars via {model_registry.active_model}")
+            print(f"[QuestionGen] ✅ Gemini generated {len(result)} chars via {model_registry.active_model}")
         return result
 
     def _parse_json(self, text: str) -> dict:
@@ -173,7 +173,7 @@ Previously asked (DO NOT repeat any of these): {json.dumps(previous_questions[-1
 Return ONLY valid JSON:
 {{
   "question": "Short behavioral question (1-2 sentences)",
-  "ideal_answer": "Concise STAR-method answer (3-5 sentences)",
+  "ideal_answer": "Humanized first-person answer using natural STAR storytelling (2-3 sentences)",
   "evaluation_keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
   "competency_evaluated": "the soft skill being tested",
   "difficulty_level": "{difficulty}",
@@ -270,7 +270,7 @@ Previously asked (NEVER repeat): {json.dumps(previous_questions[-15:])}
 Return ONLY valid JSON:
 {{
   "question": "Short technical question (1-2 sentences)",
-  "ideal_answer": "Concise expert answer (3-5 sentences)",
+  "ideal_answer": "Short humanized answer in first-person, conversational tone (2-3 sentences)",
   "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
   "difficulty_level": "{difficulty}",
   "is_coding": {str(is_coding).lower()},
@@ -337,7 +337,7 @@ Previously asked (NEVER repeat): {json.dumps(previous_questions[-15:])}
 Return ONLY valid JSON:
 {{
   "question": "Short situational question (1-3 sentences)",
-  "ideal_answer": "Concise ideal approach (3-5 sentences)",
+  "ideal_answer": "Short humanized first-person approach (2-3 sentences)",
   "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
   "difficulty_level": "{difficulty}",
   "scenario_type": "conflict|deadline|resource|technical_failure|stakeholder|priority",
@@ -397,7 +397,7 @@ Previously asked (NEVER repeat): {json.dumps(previous_questions[-15:])}
 Return ONLY valid JSON:
 {{
   "question": "Short cultural fit question (1-2 sentences)",
-  "ideal_answer": "Concise ideal response (3-5 sentences)",
+  "ideal_answer": "Short humanized first-person response (2-3 sentences)",
   "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
   "difficulty_level": "{difficulty}",
   "value_assessed": "the specific value being evaluated",
