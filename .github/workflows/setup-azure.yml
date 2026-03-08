@@ -107,7 +107,7 @@ jobs:
                 SMTP_USER="${{ secrets.SMTP_USER }}" \
                 SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
                 EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
-              && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "GROQ_FALLBACK_MODELS=llama-3.1-8b-instant,llama3-70b-8192,mixtral-8x7b-32768" \
+              && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "GROQ_FALLBACK_MODELS=llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b,openai/gpt-oss-20b,groq/compound-mini" \
               && echo "✅ Backend created!" && break \
               || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
           done

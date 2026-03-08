@@ -221,6 +221,54 @@ async def groq_raw_test():
         result["elapsed_seconds"] = elapsed
         result["model"] = settings.GROQ_MODEL
     return result
+
+
+@app.get("/api/diagnostics/groq-models")
+async def groq_models_test():
+    """Try every model in the fallback chain and report which ones work."""
+    import asyncio, time as _time
+    from app.core.config import settings
+    from groq import Groq
+
+    if not settings.GROQ_API_KEY:
+        return {"error": "GROQ_API_KEY is empty"}
+
+    client = Groq(api_key=settings.GROQ_API_KEY)
+    models = [settings.GROQ_MODEL]
+    if settings.GROQ_FALLBACK_MODELS:
+        for m in settings.GROQ_FALLBACK_MODELS.split(","):
+            m = m.strip()
+            if m and m not in models:
+                models.append(m)
+
+    results = {}
+    for model_name in models:
+        t0 = _time.time()
+        try:
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=model_name,
+                messages=[{"role": "user", "content": "Say hello in one word"}],
+                temperature=0.1,
+                max_tokens=10,
+            )
+            text = response.choices[0].message.content if response.choices else ""
+            results[model_name] = {
+                "status": "ok" if text else "empty",
+                "response": text,
+                "elapsed": round(_time.time() - t0, 2),
+            }
+        except Exception as e:
+            results[model_name] = {
+                "status": "error",
+                "error": str(e)[:200],
+                "error_type": type(e).__name__,
+                "elapsed": round(_time.time() - t0, 2),
+            }
+
+    working = [m for m, r in results.items() if r["status"] == "ok"]
+    return {"models_tested": len(models), "working": working, "results": results}
+
 @app.get("/api/diagnostics/proctoring")
 async def proctoring_diagnostics():
     """Check whether proctoring dependencies (DeepFace, YOLO, OpenCV) are available."""

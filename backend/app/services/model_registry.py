@@ -121,14 +121,19 @@ class ModelRegistry:
         return False
 
     def _is_auth_error(self, error: Exception) -> bool:
-        """Check if an exception indicates an authentication failure (bad API key)."""
+        """Check if an exception indicates an authentication failure (bad API key).
+        
+        Note: 403 is NOT treated as auth error — it often means the specific
+        model is deprecated/unavailable, so we should try fallback models.
+        Only 401 (Unauthorized) is a definitive auth failure.
+        """
         status = getattr(error, "status_code", None) or getattr(
             getattr(error, "response", None), "status_code", None
         )
-        if status in self._AUTH_ERROR_CODES:
+        if status == 401:
             return True
         err_str = str(error).lower()
-        return any(m in err_str for m in ("401", "403", "invalid api key", "invalid_api_key", "authentication", "unauthorized"))
+        return any(m in err_str for m in ("401", "invalid api key", "invalid_api_key", "authentication", "unauthorized"))
 
     def _next_available_model(self, skip_model: str) -> Optional[str]:
         """Find the next model that is not on cooldown."""
@@ -240,9 +245,10 @@ class ModelRegistry:
                         f"Check that GROQ_API_KEY in backend/.env is valid. "
                         f"Get a key at https://console.groq.com/keys"
                     )
-                    return ""  # Auth errors affect all models — stop immediately
-                elif self._is_quota_error(e):
-                    logger.warning(f"ModelRegistry: Quota/rate-limit on {model_name}: {e}")
+                    return ""  # Auth errors (401) affect all models — stop immediately
+                elif self._is_quota_error(e) or getattr(e, 'status_code', None) == 403:
+                    # 403 = model may be deprecated/unavailable — try next model
+                    logger.warning(f"ModelRegistry: Error on {model_name} (status={getattr(e, 'status_code', '?')}): {e}")
                     self._model_cooldowns[model_name] = time.time() + self._cooldown_seconds
                     continue  # try next model
                 else:

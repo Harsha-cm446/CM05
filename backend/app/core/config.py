@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # Groq LLM
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GROQ_FALLBACK_MODELS: str = "llama-3.1-8b-instant,llama3-70b-8192,mixtral-8x7b-32768"
+    GROQ_FALLBACK_MODELS: str = "llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct,qwen/qwen3-32b,openai/gpt-oss-20b,groq/compound-mini"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"
