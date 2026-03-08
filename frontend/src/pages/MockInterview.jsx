@@ -620,7 +620,8 @@ export default function MockInterview() {
         setMultiPersonAlert((data.person_count ?? 0) > 1);
 
         // Enhanced proctoring data
-        if (data.identity !== undefined) {
+        // Only update identity when backend actually ran a verification check
+        if (data.identity !== undefined && data.identity !== null) {
           setIdentityVerified(data.identity?.verified ?? null);
           setIdentityMismatchAlert(data.identity?.verified === false);
         }

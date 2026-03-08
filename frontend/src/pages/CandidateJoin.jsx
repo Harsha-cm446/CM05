@@ -730,7 +730,9 @@ export default function CandidateJoin() {
         setMultiPersonAlert((data.person_count ?? 0) > 1);
 
         // Enhanced proctoring data from proctoring_service
-        if (data.identity !== undefined) {
+        // Only update identity if the backend actually ran a verification check
+        // (identity is null between checks — don't reset to Pending)
+        if (data.identity !== undefined && data.identity !== null) {
           setIdentityVerified(data.identity?.verified ?? null);
           setIdentityMismatchAlert(data.identity?.verified === false);
         }

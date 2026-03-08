@@ -260,7 +260,10 @@ class ObjectDetectionEngine:
     """
 
     CONFIDENCE_THRESHOLD = 0.40
-    PERSON_CONFIDENCE = 0.45
+    PERSON_CONFIDENCE = 0.55
+    # Minimum bounding box area as fraction of frame area to count as a person
+    # Filters out tiny/partial detections (clothes on chair, posters, etc.)
+    PERSON_MIN_AREA_RATIO = 0.02
 
     def __init__(self):
         self._face_cascade = None
@@ -300,6 +303,9 @@ class ObjectDetectionEngine:
             detections = _yolo_model(frame, verbose=False)
 
             laptop_count = 0
+            frame_h, frame_w = frame.shape[:2]
+            frame_area = frame_h * frame_w
+            min_person_area = frame_area * self.PERSON_MIN_AREA_RATIO
 
             for r in detections:
                 for box in r.boxes:
@@ -314,10 +320,15 @@ class ObjectDetectionEngine:
                         "bbox": [round(c, 1) for c in xyxy],
                     }
 
-                    # Person detection
+                    # Person detection — require minimum bbox area to avoid
+                    # false positives from clothes, posters, partial detections
                     if cls_id == COCO_PERSON and conf >= self.PERSON_CONFIDENCE:
-                        result.person_count += 1
-                        result.bounding_boxes.append(bbox_info)
+                        bbox_w = xyxy[2] - xyxy[0]
+                        bbox_h = xyxy[3] - xyxy[1]
+                        bbox_area = bbox_w * bbox_h
+                        if bbox_area >= min_person_area:
+                            result.person_count += 1
+                            result.bounding_boxes.append(bbox_info)
 
                     # Suspicious objects
                     elif cls_id in SUSPICIOUS_CLASSES and conf >= self.CONFIDENCE_THRESHOLD:
@@ -881,6 +892,9 @@ class ProctorSession:
         self._tab_switches = 0
         self._total_frames_processed = 0
         self._registration_complete = False
+        # Consecutive multi-person detection counter (avoids single-frame false positives)
+        self._consecutive_multi_person = 0
+        self._MULTI_PERSON_CONFIRM_FRAMES = 2  # require 2 consecutive detections
 
         # Cooldowns to avoid duplicate alerts
         self._last_mismatch_time = 0.0
@@ -912,8 +926,8 @@ class ProctorSession:
         # Compute running average
         self._reference_embedding = np.mean(self._reference_embeddings, axis=0)
 
-        # Registration is solid after 5+ embeddings
-        if len(self._reference_embeddings) >= 5:
+        # Registration is solid after 3+ embeddings
+        if len(self._reference_embeddings) >= 3:
             self._registration_complete = True
 
         return {
@@ -957,8 +971,15 @@ class ProctorSession:
         if frame is not None:
             detection = self._object_detector.detect(frame)
 
-        # Multiple persons
-        if detection.person_count > 1 and (now - self._last_person_alert_time) > self._PERSON_COOLDOWN:
+        # Multiple persons — require consecutive detections to avoid false positives
+        # (clothes on chairs, posters, etc. can trigger single-frame false positives)
+        if detection.person_count > 1:
+            self._consecutive_multi_person += 1
+        else:
+            self._consecutive_multi_person = 0
+
+        if (self._consecutive_multi_person >= self._MULTI_PERSON_CONFIRM_FRAMES
+                and (now - self._last_person_alert_time) > self._PERSON_COOLDOWN):
             self._person_alerts += 1
             self._last_person_alert_time = now
             pts = self._risk_engine.add_risk(
