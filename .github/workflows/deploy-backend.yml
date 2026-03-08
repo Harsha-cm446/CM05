@@ -68,8 +68,8 @@ jobs:
             --name ${{ env.BACKEND_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_NAME }}.azurecr.io/ai-interview-backend:${{ github.sha }} \
-            --cpu 1.0 \
-            --memory 2.0Gi \
+            --cpu 2.0 \
+            --memory 4.0Gi \
             --set-env-vars \
               MONGODB_URL="${{ secrets.MONGODB_URL }}" \
               DATABASE_NAME="ai_interview_platform" \

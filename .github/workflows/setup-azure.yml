@@ -88,8 +88,8 @@ jobs:
               --ingress external \
               --min-replicas 0 \
               --max-replicas 1 \
-              --cpu 1.0 \
-              --memory 2.0Gi \
+              --cpu 2.0 
+              --memory 4.0Gi \
               --registry-server ${{ env.ACR_NAME }}.azurecr.io \
               --registry-username "$ACR_USER" \
               --registry-password "$ACR_PASS" \
