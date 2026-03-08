@@ -13,7 +13,9 @@ services:
 
   # ── Backend API ────────────────
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: interview_backend
     ports:
       - "8000:8000"

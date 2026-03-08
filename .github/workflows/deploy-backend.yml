@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "ai-engine/**"
       - ".github/workflows/deploy-backend.yml"
   workflow_dispatch: # Allow manual trigger
 
@@ -43,7 +44,7 @@ jobs:
           IMAGE_TAG=${{ env.ACR_NAME }}.azurecr.io/ai-interview-backend:${{ github.sha }}
           IMAGE_LATEST=${{ env.ACR_NAME }}.azurecr.io/ai-interview-backend:latest
           
-          docker build -t $IMAGE_TAG -t $IMAGE_LATEST ./backend
+          docker build -t $IMAGE_TAG -t $IMAGE_LATEST -f backend/Dockerfile .
           docker push $IMAGE_TAG
           docker push $IMAGE_LATEST
 
