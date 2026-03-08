@@ -64,6 +64,11 @@ jobs:
           FRONTEND_FQDN="${{ steps.urls.outputs.frontend_fqdn }}"
           FRONTEND_URL="https://${FRONTEND_FQDN:-placeholder.azurecontainerapps.io}"
           
+          # Debug: show key length (not the key itself)
+          GROQ_KEY='${{ secrets.GROQ_API_KEY }}'
+          echo "GROQ_API_KEY length: ${#GROQ_KEY}"
+          echo "GROQ_API_KEY prefix: ${GROQ_KEY:0:8}..."
+
           az containerapp update \
             --name ${{ env.BACKEND_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
@@ -78,7 +83,6 @@ jobs:
               ACCESS_TOKEN_EXPIRE_MINUTES="1440" \
               GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
               GROQ_MODEL="llama-3.3-70b-versatile" \
-              GROQ_FALLBACK_MODELS="llama-3.1-8b-instant,llama3-70b-8192,mixtral-8x7b-32768" \
               FRONTEND_URL="$FRONTEND_URL" \
               PUBLIC_URL="$FRONTEND_URL" \
               SMTP_HOST="${{ secrets.SMTP_HOST }}" \
@@ -86,3 +90,10 @@ jobs:
               SMTP_USER="${{ secrets.SMTP_USER }}" \
               SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
               EMAIL_FROM="${{ secrets.EMAIL_FROM }}"
+          
+          # Set GROQ_FALLBACK_MODELS separately to avoid comma-parsing issues
+          az containerapp update \
+            --name ${{ env.BACKEND_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --set-env-vars \
+              "GROQ_FALLBACK_MODELS=llama-3.1-8b-instant,llama3-70b-8192,mixtral-8x7b-32768"

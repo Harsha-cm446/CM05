@@ -30,6 +30,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ AI warm-up failed (non-fatal): {e}")
 
+    # Startup diagnostics — log Groq key status so Azure logs show if it's configured
+    groq_key = settings.GROQ_API_KEY
+    print(f"🔑 GROQ_API_KEY configured: {bool(groq_key)}, length: {len(groq_key) if groq_key else 0}")
+    if groq_key:
+        print(f"   Key prefix: {groq_key[:8]}...")
+    else:
+        print(f"   ⚠️ GROQ_API_KEY is EMPTY — questions will use static fallbacks!")
+        import os
+        all_env_keys = [k for k in os.environ if 'GROQ' in k.upper()]
+        print(f"   Environment vars containing 'GROQ': {all_env_keys}")
+
+
     # Pre-download and cache the Vosk STT model at startup
     # so it's ready instantly when the first interview starts
     try:
