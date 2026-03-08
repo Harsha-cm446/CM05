@@ -289,6 +289,39 @@ async def gemini_models_test():
     }
 
 
+@app.get("/api/diagnostics/openrouter-probe")
+async def openrouter_probe(models: str = ""):
+    """Test arbitrary OpenRouter models (comma-separated in query param)."""
+    import asyncio
+    import time as _time
+    from app.core.config import settings
+    if not settings.OPENROUTER_API_KEY:
+        return {"error": "OPENROUTER_API_KEY is empty"}
+    if not models:
+        return {"error": "Pass ?models=model1,model2"}
+    model_list = [m.strip() for m in models.split(",") if m.strip()]
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=settings.OPENROUTER_API_KEY)
+    except Exception as e:
+        return {"error": str(e)}
+    results = {}
+    for model_name in model_list:
+        t0 = _time.time()
+        try:
+            response = await asyncio.to_thread(
+                client.chat.completions.create, model=model_name,
+                messages=[{"role": "user", "content": "Say hello in one word"}],
+                max_tokens=100, temperature=0.1,
+            )
+            text = (response.choices[0].message.content or "").strip() if response and response.choices else ""
+            results[model_name] = {"status": "ok" if text else "empty", "response": text[:50], "elapsed": round(_time.time() - t0, 2)}
+        except Exception as e:
+            results[model_name] = {"status": "error", "error": str(e)[:200], "elapsed": round(_time.time() - t0, 2)}
+    working = [m for m, r in results.items() if r["status"] == "ok"]
+    return {"working": working, "working_count": len(working), "results": results}
+
+
 @app.get("/api/diagnostics/openrouter")
 async def openrouter_test():
     """Test OpenRouter API key and each fallback model."""
