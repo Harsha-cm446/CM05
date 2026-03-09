@@ -101,3 +101,12 @@ jobs:
               "GEMINI_FALLBACK_MODELS=" \
               "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" \
               "OPENROUTER_FALLBACK_MODELS=nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free"
+
+          # Set vLLM (Modal GPU) fallback environment variables
+          az containerapp update \
+            --name ${{ env.BACKEND_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --set-env-vars \
+              "VLLM_ENDPOINT=${{ secrets.VLLM_ENDPOINT }}" \
+              "VLLM_MODEL=${{ secrets.VLLM_MODEL }}" \
+              "VLLM_ENABLED=${{ secrets.VLLM_ENABLED }}"

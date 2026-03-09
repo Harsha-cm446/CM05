@@ -108,6 +108,7 @@ jobs:
                 SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
                 EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
               && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "GEMINI_FALLBACK_API_KEYS=${{ secrets.GEMINI_FALLBACK_API_KEYS }}" "GEMINI_FALLBACK_MODELS=" "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" "OPENROUTER_FALLBACK_MODELS=nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free" \
+              && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "VLLM_ENDPOINT=${{ secrets.VLLM_ENDPOINT }}" "VLLM_MODEL=${{ secrets.VLLM_MODEL }}" "VLLM_ENABLED=${{ secrets.VLLM_ENABLED }}" \
               && echo "✅ Backend created!" && break \
               || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
           done
