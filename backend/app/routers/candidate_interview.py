@@ -681,11 +681,15 @@ async def get_candidate_report_pdf(token: str):
     if not ai_session:
         raise HTTPException(status_code=404, detail="Interview not started")
 
-    user_proxy = {"name": ai_session.get("candidate_name", "Candidate")}
-    report = await ai_service.generate_report(session=ai_session, user=user_proxy)
-    report["candidate_email"] = ai_session.get("candidate_email", "")
+    try:
+        user_proxy = {"name": ai_session.get("candidate_name", "Candidate")}
+        report = await ai_service.generate_report(session=ai_session, user=user_proxy)
+        report["candidate_email"] = ai_session.get("candidate_email", "")
+        pdf_bytes = generate_pdf_report(report)
+    except Exception as e:
+        print(f"[PDF] Error generating PDF for token {token[:8]}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate PDF report")
 
-    pdf_bytes = generate_pdf_report(report)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

@@ -7,6 +7,36 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tempfile
 import os
+import re
+
+
+def _sanitize_text(text: str) -> str:
+    """Replace Unicode characters unsupported by standard PDF fonts with ASCII equivalents."""
+    if not isinstance(text, str):
+        return str(text) if text is not None else ""
+    replacements = {
+        "\u2018": "'", "\u2019": "'",   # smart single quotes
+        "\u201c": '"', "\u201d": '"',   # smart double quotes
+        "\u2013": "-", "\u2014": "--",  # en-dash, em-dash
+        "\u2010": "-", "\u2011": "-",   # hyphens
+        "\u2012": "-", "\u2015": "--",  # figure dash, horizontal bar
+        "\u2022": "*",                  # bullet
+        "\u2026": "...",                # ellipsis
+        "\u00a0": " ",                  # non-breaking space
+        "\u2032": "'", "\u2033": '"',   # prime, double prime
+        "\u2190": "<-", "\u2192": "->", # arrows
+        "\u2264": "<=", "\u2265": ">=", # comparison
+        "\u2260": "!=",                 # not equal
+        "\u00b7": "*",                  # middle dot
+        "\u200b": "",                   # zero-width space
+        "\u200e": "", "\u200f": "",     # directional marks
+        "\ufeff": "",                   # BOM
+    }
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+    # Remove any remaining non-latin-1 characters
+    text = text.encode("latin-1", errors="replace").decode("latin-1")
+    return text
 
 
 # ── Chart Generators ──────────────────────────────────
@@ -168,8 +198,20 @@ def _draw_progress_bar(pdf, x, y, width, height, pct, color_rgb):
 
 # ── Main PDF Generator ───────────────────────────────
 
+def _sanitize_report(obj):
+    """Recursively sanitize all strings in the report data structure."""
+    if isinstance(obj, str):
+        return _sanitize_text(obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_report(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_report(v) for v in obj]
+    return obj
+
+
 def generate_pdf_report(report: dict) -> bytes:
     """Generate a professional PDF performance report with matplotlib charts."""
+    report = _sanitize_report(report)
     chart_files = []
 
     try:

@@ -592,8 +592,12 @@ async def get_report_pdf(session_id: str, user: dict = Depends(get_current_user)
     if session["user_id"] != str(user["_id"]):
         raise HTTPException(status_code=403, detail="Not your session")
 
-    report = await ai_service.generate_report(session=session, user=user)
-    pdf_bytes = generate_pdf_report(report)
+    try:
+        report = await ai_service.generate_report(session=session, user=user)
+        pdf_bytes = generate_pdf_report(report)
+    except Exception as e:
+        print(f"[PDF] Error generating PDF for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate PDF report")
 
     return StreamingResponse(
         iter([pdf_bytes]),
