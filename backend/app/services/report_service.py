@@ -658,6 +658,134 @@ def generate_pdf_report(report: dict) -> bytes:
                 pdf.multi_cell(190, 5, f"Feedback: {feedback}")
             pdf.ln(4)
 
+        # ══════════════════════════════════════════════
+        # PROCTORING & INTEGRITY REPORT
+        # ══════════════════════════════════════════════
+        proctoring = report.get("proctoring", {})
+        integrity_report = proctoring.get("integrity_report", {})
+        has_proctoring = bool(proctoring.get("violation_log") or integrity_report)
+
+        if has_proctoring:
+            pdf.add_page()
+            pdf.set_font("Helvetica", "B", 14)
+            pdf.set_text_color(102, 126, 234)
+            pdf.cell(0, 10, "Proctoring & Integrity Report", ln=True)
+            pdf.set_draw_color(102, 126, 234)
+            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+            pdf.ln(4)
+
+            # Overall integrity score and verdict
+            integrity_score = proctoring.get("integrity_score",
+                integrity_report.get("integrity_score", 100))
+            risk_verdict = proctoring.get("risk_verdict",
+                integrity_report.get("final_verdict", "SAFE"))
+            verdict_color = (34, 139, 34) if risk_verdict == "SAFE" else \
+                (255, 165, 0) if risk_verdict == "SUSPICIOUS" else (220, 20, 60)
+
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.set_text_color(*verdict_color)
+            pdf.cell(90, 8, f"Integrity Score: {integrity_score:.0f}/100")
+            pdf.cell(0, 8, f"Verdict: {risk_verdict}", ln=True)
+            pdf.ln(3)
+
+            # Identity verification
+            identity_data = integrity_report.get("identity", {})
+            identity_mismatches = proctoring.get("identity_mismatches",
+                identity_data.get("mismatches", 0))
+            identity_checks = identity_data.get("total_verifications", 0)
+
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_text_color(51, 51, 51)
+            pdf.cell(0, 7, "Identity Verification", ln=True)
+            pdf.set_font("Helvetica", "", 10)
+            if identity_mismatches > 0:
+                pdf.set_text_color(220, 20, 60)
+                pdf.cell(0, 6, f"  Person changes detected: {identity_mismatches} "
+                    f"(out of {identity_checks} checks)", ln=True)
+            elif identity_checks > 0:
+                pdf.set_text_color(34, 139, 34)
+                pdf.cell(0, 6, f"  Identity verified consistently across {identity_checks} checks", ln=True)
+            else:
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(0, 6, "  No identity verification data available", ln=True)
+            pdf.ln(2)
+
+            # Proctoring statistics
+            proc_stats = integrity_report.get("proctoring_stats", {})
+            gaze_violations = proctoring.get("gaze_violations", 0)
+            multi_person = proctoring.get("multi_person_alerts",
+                proc_stats.get("person_alerts", 0))
+            tab_switches = proctoring.get("tab_switches",
+                proc_stats.get("tab_switches", 0))
+            suspicious_objs = proctoring.get("suspicious_objects_detected",
+                proc_stats.get("suspicious_objects_detected", 0))
+            face_absence = proc_stats.get("face_absence_total_sec",
+                proctoring.get("total_away_time_sec", 0))
+
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_text_color(51, 51, 51)
+            pdf.cell(0, 7, "Monitoring Summary", ln=True)
+            pdf.set_font("Helvetica", "", 10)
+
+            stats_items = [
+                ("Gaze violations (looking away)", gaze_violations,
+                    (220, 20, 60) if gaze_violations > 5 else (255, 165, 0) if gaze_violations > 0 else (34, 139, 34)),
+                ("Multiple person alerts", multi_person,
+                    (220, 20, 60) if multi_person > 0 else (34, 139, 34)),
+                ("Tab switches", tab_switches,
+                    (220, 20, 60) if tab_switches > 3 else (255, 165, 0) if tab_switches > 0 else (34, 139, 34)),
+                ("Suspicious objects detected", suspicious_objs,
+                    (220, 20, 60) if suspicious_objs > 0 else (34, 139, 34)),
+                ("Person changes (identity mismatch)", identity_mismatches,
+                    (220, 20, 60) if identity_mismatches > 0 else (34, 139, 34)),
+                ("Face absence (seconds)", round(face_absence, 1),
+                    (220, 20, 60) if face_absence > 30 else (255, 165, 0) if face_absence > 10 else (34, 139, 34)),
+            ]
+
+            for label, value, color in stats_items:
+                pdf.set_text_color(*color)
+                pdf.cell(120, 6, f"  {label}:")
+                pdf.set_font("Helvetica", "B", 10)
+                pdf.cell(0, 6, str(value), ln=True)
+                pdf.set_font("Helvetica", "", 10)
+            pdf.ln(3)
+
+            # Violation details (from integrity report timeline)
+            violations = integrity_report.get("violations", {})
+            violation_breakdown = violations.get("breakdown", {})
+            if violation_breakdown:
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.set_text_color(51, 51, 51)
+                pdf.cell(0, 7, "Violation Breakdown", ln=True)
+                pdf.set_font("Helvetica", "", 10)
+                for vtype, vcount in violation_breakdown.items():
+                    label = vtype.replace("_", " ").title()
+                    v_color = (220, 20, 60) if vcount > 3 else (255, 165, 0) if vcount > 0 else (34, 139, 34)
+                    pdf.set_text_color(*v_color)
+                    pdf.cell(0, 6, f"  {label}: {vcount}", ln=True)
+                pdf.ln(2)
+
+            # Detected objects list (from violation log)
+            violation_log = proctoring.get("violation_log", [])
+            object_violations = [v for v in violation_log
+                if v.get("type") in ("phone_detected", "suspicious_object")]
+            if not object_violations:
+                timeline = violations.get("timeline", [])
+                object_violations = [v for v in timeline
+                    if v.get("violation_type") in ("phone_detected", "suspicious_object")]
+
+            if object_violations:
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.set_text_color(220, 20, 60)
+                pdf.cell(0, 7, "Suspicious Objects Detected", ln=True)
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(51, 51, 51)
+                for v in object_violations[:10]:
+                    ts = v.get("timestamp", v.get("time", ""))
+                    details = v.get("details", v.get("type", ""))
+                    pdf.cell(0, 5, f"  [{ts}] {details}", ln=True)
+                pdf.ln(2)
+
         # ── Footer on last page ───────────────────────
         pdf.set_y(-25)
         pdf.set_font("Helvetica", "I", 8)

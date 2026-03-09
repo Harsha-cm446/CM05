@@ -1499,7 +1499,7 @@ export default function MockInterview() {
               <div className="absolute top-3 left-3 right-3 flex items-center justify-center">
                 <div className="bg-red-600/95 text-white px-4 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-2 animate-pulse shadow-lg">
                   <Shield size={14} />
-                  <span>Identity mismatch detected!</span>
+                  <span>Person change detected — different person identified!</span>
                 </div>
               </div>
             )}
@@ -1514,7 +1514,7 @@ export default function MockInterview() {
             {suspiciousObjects.length > 0 && (
               <div className="absolute top-3 right-3">
                 <div className="bg-orange-600/90 text-white px-2 py-1 rounded-lg text-[10px] font-semibold">
-                  ⚠ {suspiciousObjects.join(', ')}
+                  ⚠ {suspiciousObjects.map(o => typeof o === 'string' ? o : (o.type || 'object').replace('_', ' ')).join(', ')} detected
                 </div>
               </div>
             )}

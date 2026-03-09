@@ -1585,7 +1585,7 @@ export default function CandidateJoin() {
                 <div className="absolute top-3 left-3 right-3">
                   <div className="bg-red-600/95 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 animate-pulse">
                     <Shield size={14} />
-                    <span>Identity mismatch! Face does not match registered identity.</span>
+                    <span>Person change detected — different person identified!</span>
                   </div>
                 </div>
               )}
@@ -1600,7 +1600,7 @@ export default function CandidateJoin() {
               {suspiciousObjects.length > 0 && (
                 <div className="absolute top-3 right-3">
                   <div className="bg-orange-600/90 text-white px-2 py-1 rounded-lg text-[10px] font-semibold">
-                    ⚠ {suspiciousObjects.join(', ')}
+                    ⚠ {suspiciousObjects.map(o => typeof o === 'string' ? o : (o.type || 'object').replace('_', ' ')).join(', ')} detected
                   </div>
                 </div>
               )}
@@ -1690,7 +1690,7 @@ export default function CandidateJoin() {
                 {suspiciousObjects.length > 0 && (
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-500 flex items-center gap-1"><AlertTriangle size={10} /> Objects</span>
-                    <span className="text-xs font-bold text-orange-600">{suspiciousObjects.join(', ')}</span>
+                    <span className="text-xs font-bold text-orange-600">{suspiciousObjects.map(o => typeof o === 'string' ? o : (o.type || 'object').replace('_', ' ')).join(', ')}</span>
                   </div>
                 )}
                 {/* Risk Score */}

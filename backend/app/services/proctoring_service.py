@@ -1010,50 +1010,77 @@ class ProctorSession:
                     frame=frame,
                 )
 
-        # ── 2. Face Presence Detection ──────────────────────────
+        # ── 2. Attention Monitoring (run BEFORE identity verification) ──
+        # Running attention first lets us distinguish "looking away" from
+        # "different person" — a turned head produces a different embedding
+        # but is NOT a person change.
+        attention_result = self._attention_monitor.analyze(frame) if frame is not None else self._attention_monitor._default_result()
+        is_looking_away = attention_result.get("looking_away", False)
+
+        if attention_result.get("excessive_movement"):
+            self._risk_engine.add_risk(
+                "attention_away", confidence=0.5,
+                details="Excessive head movement detected",
+            )
+            self._violation_logger.log(
+                "attention_away", 0.5, RISK_WEIGHTS["attention_away"],
+                "Excessive head movement pattern detected",
+                frame=frame,
+            )
+
+        # ── 3. Face Presence Detection ──────────────────────────
         face_detected = detection.person_count >= 1  # at least one person
         # Refine: check if we got an embedding (more reliable for face)
         has_face_embedding = False
 
-        # ── 3. Identity Verification (periodic) ─────────────────
+        # ── 4. Identity Verification (periodic) ─────────────────
+        # Skip verification when the candidate is looking away — a turned
+        # head naturally produces a different embedding and would cause
+        # false "person mismatch" alerts.
         identity_result = None
+        can_verify = not is_looking_away and attention_result.get("direction") not in ("absent", "left", "right", "down", "up")
         if self.is_registered and (now - self._last_verify_time) >= self.VERIFY_INTERVAL_SEC:
-            self._last_verify_time = now
-            current_embedding = self._embedding_engine.extract_embedding(frame) if frame is not None else None
+            if can_verify:
+                self._last_verify_time = now
+                current_embedding = self._embedding_engine.extract_embedding(frame) if frame is not None else None
 
-            if current_embedding is not None:
-                has_face_embedding = True
-                similarity = self._embedding_engine.cosine_similarity(
-                    self._reference_embedding, current_embedding
-                )
-                self._identity_verifications += 1
-                is_match = similarity >= self.FACE_SIMILARITY_THRESHOLD
-
-                identity_result = {
-                    "verified": is_match,
-                    "similarity": round(similarity, 3),
-                    "threshold": self.FACE_SIMILARITY_THRESHOLD,
-                }
-
-                if not is_match and (now - self._last_mismatch_time) > self._MISMATCH_COOLDOWN:
-                    self._identity_mismatches += 1
-                    self._last_mismatch_time = now
-                    self._risk_engine.add_risk(
-                        "face_mismatch", confidence=1.0 - similarity,
-                        details=f"Identity mismatch: similarity={similarity:.3f} < threshold={self.FACE_SIMILARITY_THRESHOLD}",
+                if current_embedding is not None:
+                    has_face_embedding = True
+                    similarity = self._embedding_engine.cosine_similarity(
+                        self._reference_embedding, current_embedding
                     )
-                    self._violation_logger.log(
-                        "face_mismatch", 1.0 - similarity,
-                        RISK_WEIGHTS["face_mismatch"],
-                        f"Face identity mismatch detected (similarity: {similarity:.3f})",
-                        frame=frame,
-                    )
+                    self._identity_verifications += 1
+                    is_match = similarity >= self.FACE_SIMILARITY_THRESHOLD
+
+                    identity_result = {
+                        "verified": is_match,
+                        "similarity": round(similarity, 3),
+                        "threshold": self.FACE_SIMILARITY_THRESHOLD,
+                    }
+
+                    if not is_match and (now - self._last_mismatch_time) > self._MISMATCH_COOLDOWN:
+                        self._identity_mismatches += 1
+                        self._last_mismatch_time = now
+                        self._risk_engine.add_risk(
+                            "face_mismatch", confidence=1.0 - similarity,
+                            details=f"Person change suspected: similarity={similarity:.3f} < threshold={self.FACE_SIMILARITY_THRESHOLD}",
+                        )
+                        self._violation_logger.log(
+                            "face_mismatch", 1.0 - similarity,
+                            RISK_WEIGHTS["face_mismatch"],
+                            f"Person change detected — face does not match registered candidate (similarity: {similarity:.3f})",
+                            frame=frame,
+                        )
+            else:
+                # Looking away — don't verify identity but don't consume the timer
+                # so verification runs on the next frame where face is centered
+                pass
 
         # Use embedding result for face detection if available
         if has_face_embedding:
             face_detected = True
 
-        # ── 4. Face Absence Monitoring ──────────────────────────
+        # ── 5. Face Absence Monitoring ──────────────────────────
         absence_result = self._absence_monitor.update(face_detected)
 
         if absence_result.get("triggered") and absence_result.get("face_absent"):
@@ -1065,24 +1092,6 @@ class ProctorSession:
             self._violation_logger.log(
                 "face_absent", 0.8, RISK_WEIGHTS["face_absent"],
                 f"Face absent for {dur:.0f} seconds",
-                frame=frame,
-            )
-
-        # ── 5. Attention Monitoring ─────────────────────────────
-        attention_result = self._attention_monitor.analyze(frame) if frame is not None else self._attention_monitor._default_result()
-
-        if attention_result.get("looking_away"):
-            # Only add risk for sustained attention violations (checked by caller)
-            pass  # Individual away frames don't add risk; the GazeStateMachine at router level handles this
-
-        if attention_result.get("excessive_movement"):
-            self._risk_engine.add_risk(
-                "attention_away", confidence=0.5,
-                details="Excessive head movement detected",
-            )
-            self._violation_logger.log(
-                "attention_away", 0.5, RISK_WEIGHTS["attention_away"],
-                "Excessive head movement pattern detected",
                 frame=frame,
             )
 

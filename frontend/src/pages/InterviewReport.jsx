@@ -446,15 +446,17 @@ export default function InterviewReport() {
       )}
 
       {/* ═══ Proctoring Summary ═══ */}
-      {report.proctoring && (report.proctoring.gaze_violations > 0 || report.proctoring.multi_person_alerts > 0 || report.proctoring.tab_switches > 0) && (
+      {report.proctoring && (report.proctoring.gaze_violations > 0 || report.proctoring.multi_person_alerts > 0 || report.proctoring.tab_switches > 0 || report.proctoring.suspicious_objects_detected > 0 || report.proctoring.identity_mismatches > 0) && (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
           <h3 className="font-semibold text-indigo-700 mb-4">🛡️ Proctoring & Integrity Report</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-4">
             {[
               { label: 'Gaze Violations', value: report.proctoring.gaze_violations || 0, color: 'red' },
               { label: 'Multi-Person Alerts', value: report.proctoring.multi_person_alerts || 0, color: 'orange' },
               { label: 'Tab Switches', value: report.proctoring.tab_switches || 0, color: 'purple' },
               { label: 'Away Time', value: `${Math.round(report.proctoring.total_away_time_sec || 0)}s`, color: 'blue' },
+              { label: 'Suspicious Objects', value: report.proctoring.suspicious_objects_detected || 0, color: 'yellow' },
+              { label: 'Person Changes', value: report.proctoring.identity_mismatches || 0, color: 'red' },
             ].map((item) => (
               <div key={item.label} className={`text-center bg-${item.color}-50 rounded-xl p-3`}>
                 <div className={`text-2xl font-bold text-${item.color}-600`}>{item.value}</div>
@@ -467,14 +469,22 @@ export default function InterviewReport() {
             const m = report.proctoring.multi_person_alerts || 0;
             const t = report.proctoring.tab_switches || 0;
             const a = report.proctoring.total_away_time_sec || 0;
-            const score = Math.max(0, 100 - (g * 3) - (m * 15) - (t * 10) - (a * 0.5));
+            const s = report.proctoring.suspicious_objects_detected || 0;
+            const p = report.proctoring.identity_mismatches || 0;
+            const score = report.proctoring.integrity_score ?? Math.max(0, 100 - (g * 3) - (m * 15) - (t * 10) - (a * 0.5) - (s * 10) - (p * 25));
+            const verdict = report.proctoring.risk_verdict || (score >= 80 ? 'SAFE' : score >= 50 ? 'SUSPICIOUS' : 'HIGH_RISK');
             return (
               <div className="mt-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm text-gray-600 font-medium">Integrity Score</span>
-                  <span className={`text-lg font-bold ${score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
-                    {Math.round(score)}%
-                  </span>
+                  <div className="flex items-center space-x-3">
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${verdict === 'SAFE' ? 'bg-green-100 text-green-700' : verdict === 'SUSPICIOUS' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                      {verdict}
+                    </span>
+                    <span className={`text-lg font-bold ${score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                      {Math.round(score)}%
+                    </span>
+                  </div>
                 </div>
                 <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                   <div className={`h-full rounded-full transition-all ${score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${score}%` }} />

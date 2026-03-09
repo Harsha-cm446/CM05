@@ -145,6 +145,8 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
             "multi_person_alerts": 0,
             "tab_switches": 0,
             "total_away_time_sec": 0,
+            "suspicious_objects_detected": 0,
+            "identity_mismatches": 0,
             "violation_log": [],
         },
         "created_at": datetime.utcnow(),
@@ -702,17 +704,22 @@ async def get_proctoring_summary(
     multi_p = proctoring.get("multi_person_alerts", 0)
     tab_s = proctoring.get("tab_switches", 0)
     away_time = proctoring.get("total_away_time_sec", 0)
+    suspicious_objs = proctoring.get("suspicious_objects_detected", 0)
+    identity_mismatches = proctoring.get("identity_mismatches", 0)
 
-    total_violations = gaze_v + multi_p + tab_s
+    total_violations = gaze_v + multi_p + tab_s + suspicious_objs + identity_mismatches
 
     # Compute integrity score (100 = perfect, deductions for violations)
-    integrity_score = max(0, 100 - (gaze_v * 3) - (multi_p * 15) - (tab_s * 10) - (away_time * 0.5))
+    integrity_score = max(0, 100 - (gaze_v * 3) - (multi_p * 15) - (tab_s * 10)
+                         - (away_time * 0.5) - (suspicious_objs * 10) - (identity_mismatches * 25))
 
     return {
         "gaze_violations": gaze_v,
         "multi_person_alerts": multi_p,
         "tab_switches": tab_s,
         "total_away_time_sec": round(away_time, 1),
+        "suspicious_objects_detected": suspicious_objs,
+        "identity_mismatches": identity_mismatches,
         "total_violations": total_violations,
         "integrity_score": round(integrity_score, 1),
         "violation_log": proctoring.get("violation_log", [])[-20:],  # Last 20
@@ -844,6 +851,38 @@ async def update_practice_metrics(
         video_frame=video_frame_data,
     )
 
+    # Persist proctoring detections to DB (lightweight upserts for objects/identity)
+    proctor_update = {}
+    suspicious_objs = result.get("suspicious_objects", [])
+    if suspicious_objs:
+        for obj in suspicious_objs:
+            obj_entry = {
+                "type": obj.get("type", "unknown"),
+                "timestamp": datetime.utcnow().isoformat(),
+                "confidence": obj.get("confidence", 0),
+            }
+            proctor_update.setdefault("$push", {})["proctoring.violation_log"] = {
+                "type": "suspicious_object",
+                "timestamp": datetime.utcnow().isoformat(),
+                "details": f"Detected: {obj.get('type', 'unknown')}",
+            }
+        proctor_update.setdefault("$inc", {})["proctoring.suspicious_objects_detected"] = len(suspicious_objs)
+
+    identity = result.get("identity")
+    if identity is not None and identity.get("verified") is False:
+        proctor_update.setdefault("$inc", {})["proctoring.identity_mismatches"] = 1
+        proctor_update.setdefault("$push", {})["proctoring.violation_log"] = {
+            "type": "identity_mismatch",
+            "timestamp": datetime.utcnow().isoformat(),
+            "details": f"Person change detected (similarity: {identity.get('similarity', 0):.3f})",
+        }
+
+    if proctor_update:
+        await db.mock_sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            proctor_update,
+        )
+
     return {
         "metrics": result.get("metrics") if has_text else None,
         "suggestion": result.get("suggestion") if has_text else None,
@@ -928,14 +967,30 @@ async def _complete_session(db, session_id: str, session: dict):
     tech_score = ai_service.calculate_round_score(tech_responses)
     hr_score = ai_service.calculate_round_score(hr_responses)
 
+    update_fields = {
+        "status": "completed",
+        "completed_at": datetime.utcnow(),
+        "technical_score": tech_score,
+        "hr_score": hr_score,
+    }
+
+    # Save proctoring integrity report before cleanup
+    if proctor_manager is not None:
+        proctor_session = proctor_manager.get(session_id)
+        if proctor_session is not None:
+            try:
+                integrity_report = proctor_session.generate_report()
+                update_fields["proctoring.integrity_report"] = integrity_report
+                update_fields["proctoring.identity_mismatches"] = integrity_report.get("identity", {}).get("mismatches", 0)
+                update_fields["proctoring.suspicious_objects_detected"] = integrity_report.get("proctoring_stats", {}).get("suspicious_objects_detected", 0)
+                update_fields["proctoring.risk_verdict"] = integrity_report.get("final_verdict", "UNKNOWN")
+                update_fields["proctoring.integrity_score"] = integrity_report.get("integrity_score", 100)
+            except Exception:
+                pass
+
     await db.mock_sessions.update_one(
         {"_id": ObjectId(session_id)},
-        {"$set": {
-            "status": "completed",
-            "completed_at": datetime.utcnow(),
-            "technical_score": tech_score,
-            "hr_score": hr_score,
-        }},
+        {"$set": update_fields},
     )
 
     # Clean up in-memory session data to prevent memory leaks
