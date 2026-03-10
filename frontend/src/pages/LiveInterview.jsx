@@ -166,10 +166,8 @@ export default function LiveInterview() {
   }, []);
 
   const toggleFullscreen = useCallback(() => {
-    const el = enlargedModalRef.current;
-    if (!el) return;
     if (!document.fullscreenElement) {
-      el.requestFullscreen().catch(() => {});
+      document.documentElement.requestFullscreen().catch(() => {});
     } else {
       document.exitFullscreen().catch(() => {});
     }
@@ -1201,6 +1199,13 @@ export default function LiveInterview() {
           >
             <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
             <span>Refresh</span>
+          </button>
+          <button
+            onClick={toggleFullscreen}
+            className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
+            title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          >
+            {isFullscreen ? <Minimize2 size={16} className="text-gray-600" /> : <Maximize2 size={16} className="text-gray-600" />}
           </button>
           <button
             onClick={() => setShowEndConfirm(true)}

@@ -6,6 +6,7 @@ import {
   Mic, MicOff, Camera, Send, Loader2, ArrowRight, Clock, Code,
   Volume2, VolumeX, Timer, AlertTriangle, CheckCircle, XCircle,
   Activity, TrendingUp, Eye, Zap, Target, Brain, Shield, UserX, MonitorX, LogOut,
+  Maximize2, Minimize2,
 } from 'lucide-react';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -73,6 +74,31 @@ export default function MockInterview() {
   });
   const [tabSwitchAlert, setTabSwitchAlert] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Sync fullscreen state when Esc key or browser exits fullscreen
+  useEffect(() => {
+    const onFSChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFSChange);
+    return () => document.removeEventListener('fullscreenchange', onFSChange);
+  }, []);
+
+  // Auto-exit fullscreen when practice ends
+  useEffect(() => {
+    if (['done', 'failed'].includes(phase)) {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  }, [phase]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  }, []);
   const [endingInterview, setEndingInterview] = useState(false);
   const gazeWarningStartRef = useRef(null);
 
@@ -681,6 +707,11 @@ export default function MockInterview() {
   const startInterview = async () => {
     setPermissionDenied(false);
     setPermissionError('');
+
+    // Request fullscreen immediately inside click handler (requires user gesture)
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
 
     // Request camera + mic permissions first (mobile-friendly constraints)
     try {
@@ -1381,6 +1412,15 @@ export default function MockInterview() {
               <span>{formatTime(timeStatus)} left</span>
             </div>
           )}
+
+          {/* Fullscreen toggle */}
+          <button
+            onClick={toggleFullscreen}
+            className="p-2 rounded-xl bg-gray-100 text-gray-600 hover:bg-gray-200 transition"
+            title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          >
+            {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
 
           {/* End Interview */}
           <button

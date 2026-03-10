@@ -173,12 +173,7 @@ export default function CandidateJoin() {
 
   // Auto-enter fullscreen when interview starts, exit when it ends
   useEffect(() => {
-    if (phase === 'interview') {
-      const el = document.documentElement;
-      if (!document.fullscreenElement && el.requestFullscreen) {
-        el.requestFullscreen().catch(() => {});
-      }
-    } else if (['done', 'failed', 'session_ended', 'error'].includes(phase)) {
+    if (['done', 'failed', 'session_ended', 'error'].includes(phase)) {
       if (document.fullscreenElement) {
         document.exitFullscreen().catch(() => {});
       }
@@ -1086,6 +1081,11 @@ export default function CandidateJoin() {
     if (!candidateName.trim()) {
       toast.error('Please enter your name');
       return;
+    }
+
+    // Request fullscreen immediately inside click handler (requires user gesture)
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
     }
 
     setPermissionDenied(false);
