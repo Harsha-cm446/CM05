@@ -44,7 +44,7 @@ _candidate_gaze_fsms = {}
 _proctoring_locks: Dict[str, asyncio.Lock] = {}
 router = APIRouter(prefix="/api/candidate-interview", tags=["Candidate AI Interview"])
 
-TECH_CUTOFF = 70.0
+DEFAULT_TECH_CUTOFF = 70.0
 
 
 # ── Schemas ───────────────────────────────────────────
@@ -130,6 +130,8 @@ async def get_interview_info(token: str):
         "ai_session_id": str(ai_session["_id"]) if ai_session else None,
         "ai_session_status": ai_session_status,
         "interview_session_id": candidate.get("interview_session_id", ""),
+        "candidate_name": ai_session.get("candidate_name", candidate.get("name", "")) if ai_session else candidate.get("name", ""),
+        "technical_cutoff": session.get("technical_cutoff", DEFAULT_TECH_CUTOFF),
     }
 
 
@@ -150,11 +152,18 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
     if existing and existing.get("status") == "in_progress":
         # Resume: return current question
         current_q_index = len(existing.get("responses", []))
+        started_at = existing.get("started_at", existing["created_at"])
+        duration = existing.get("duration_minutes", session.get("duration_minutes", 30))
+        proc_total = existing.get("processing_time_total", 0.0)
+        time_status = ai_service.check_time_status(started_at, duration, proc_total)
+
+        # Auto-complete if time has expired during absence
+        if time_status and time_status.get("is_expired"):
+            await _complete_candidate_session(db, existing, candidate, existing.get("responses", []))
+            raise HTTPException(status_code=400, detail="Interview already completed")
+
         if current_q_index < len(existing.get("questions", [])):
             q = existing["questions"][current_q_index]
-            started_at = existing.get("started_at", existing["created_at"])
-            duration = existing.get("duration_minutes", session.get("duration_minutes", 30))
-            proc_total = existing.get("processing_time_total", 0.0)
             return {
                 "session_id": str(existing["_id"]),
                 "interview_session_id": candidate.get("interview_session_id", ""),
@@ -169,7 +178,58 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
                 "resumed": True,
                 "round": existing.get("current_round", "Technical"),
                 "duration_minutes": duration,
-                "time_status": ai_service.check_time_status(started_at, duration, proc_total),
+                "time_status": time_status,
+            }
+        else:
+            # All questions answered but session not completed — generate next question
+            current_round = existing.get("current_round", "Technical")
+            prev_questions = [q["question"] for q in existing.get("questions", [])]
+            prev_answers = [r["answer_text"] for r in existing.get("responses", [])]
+            last_score = 50
+            if existing.get("responses"):
+                last_score = existing["responses"][-1].get("evaluation", {}).get("overall_score", 50)
+            next_difficulty = ai_service.determine_next_difficulty(last_score, existing.get("difficulty", "medium"))
+            q_data = await ai_service.generate_question(
+                job_role=existing.get("job_role", session.get("job_role", "General")),
+                difficulty=next_difficulty,
+                previous_questions=prev_questions,
+                round_type=current_round,
+                job_description=existing.get("job_description", ""),
+                experience_level=existing.get("experience_level", ""),
+                previous_answers=prev_answers,
+                last_score=last_score,
+                jd_analysis=existing.get("jd_analysis"),
+                session_id=str(existing["_id"]),
+            )
+            next_qid = str(uuid.uuid4())
+            next_q_doc = {
+                "question_id": next_qid,
+                "question": q_data["question"],
+                "ideal_answer": q_data.get("ideal_answer", ""),
+                "keywords": q_data.get("keywords", []),
+                "difficulty": next_difficulty,
+                "round": current_round,
+                "is_coding": q_data.get("is_coding", False),
+            }
+            await db.candidate_ai_sessions.update_one(
+                {"_id": existing["_id"]},
+                {"$push": {"questions": next_q_doc}, "$set": {"difficulty": next_difficulty}},
+            )
+            return {
+                "session_id": str(existing["_id"]),
+                "interview_session_id": candidate.get("interview_session_id", ""),
+                "question": {
+                    "question_id": next_qid,
+                    "question": q_data["question"],
+                    "difficulty": next_difficulty,
+                    "question_number": current_q_index + 1,
+                    "round": current_round,
+                    "is_coding": q_data.get("is_coding", False),
+                },
+                "resumed": True,
+                "round": current_round,
+                "duration_minutes": duration,
+                "time_status": time_status,
             }
 
     job_role = session.get("job_role", "General")
@@ -500,8 +560,10 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
 
         tech_time_limit = duration * 0.6
         active_elapsed = time_status["elapsed_minutes"]
+        session = await _get_session_for_candidate(candidate)
+        tech_cutoff = session.get("technical_cutoff", DEFAULT_TECH_CUTOFF)
         if active_elapsed >= tech_time_limit and len(tech_responses) >= 3:
-            if not ai_service.should_proceed_to_hr(tech_score, TECH_CUTOFF):
+            if not ai_service.should_proceed_to_hr(tech_score, tech_cutoff):
                 await db.candidate_ai_sessions.update_one(
                     {"_id": ai_session["_id"]},
                     {"$set": {
@@ -523,7 +585,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
                     "time_status": time_status,
                     "next_question": None,
                     "session_id": str(ai_session["_id"]),
-                    "message": f"Technical round score ({tech_score}%) is below the {TECH_CUTOFF}% cutoff.",
+                    "message": f"Technical round score ({tech_score}%) is below the {tech_cutoff}% cutoff.",
                 }
             else:
                 current_round = "HR"

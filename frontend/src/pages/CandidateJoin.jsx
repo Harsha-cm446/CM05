@@ -143,6 +143,11 @@ export default function CandidateJoin() {
           setPhase('done');
           setSessionId(res.data.ai_session_id);
         } else {
+          // Pre-fill name from previous session if resuming
+          if (res.data.candidate_name) {
+            setCandidateName(res.data.candidate_name);
+          }
+          setPhase('welcome');
           setPhase('welcome');
         }
       } catch (err) {
@@ -809,11 +814,15 @@ export default function CandidateJoin() {
       ws.onopen = () => {
         console.log('[WS] Connected to interview room, session:', interviewSessionId);
         reconnectAttempts = 0;
-        // Send initial stream status
+        // Send initial stream status immediately on connect
         sendStreamReady(ws);
-        // Start heartbeat: re-send stream_ready every 10s so HR always has fresh status
+        // Rapid-fire initial announcements: 0.5s, 1.5s, 3s to guarantee HR gets it
+        setTimeout(() => sendStreamReady(ws), 500);
+        setTimeout(() => sendStreamReady(ws), 1500);
+        setTimeout(() => sendStreamReady(ws), 3000);
+        // Start heartbeat: re-send stream_ready every 5s so HR always has fresh status
         clearInterval(heartbeatInterval);
-        heartbeatInterval = setInterval(() => sendStreamReady(ws), 10000);
+        heartbeatInterval = setInterval(() => sendStreamReady(ws), 5000);
       };
 
       ws.onmessage = (event) => {
@@ -854,7 +863,8 @@ export default function CandidateJoin() {
     };
   }, [phase, interviewSessionId]);
 
-  // Re-notify HR when camera/screen state changes
+  // Re-notify HR when camera/screen state changes and re-create peer connections
+  // so HR receives updated tracks (e.g., after screen share is restored)
   useEffect(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
@@ -862,6 +872,12 @@ export default function CandidateJoin() {
         has_camera: cameraOn,
         has_screen: !!screenStreamRef.current,
       }));
+      // Re-create offers for all existing HR peer connections so they get updated tracks
+      const existingPeers = Object.keys(peerConnectionsRef.current);
+      existingPeers.forEach((targetId) => {
+        console.log('[Candidate] Re-creating stream offer for HR after stream change:', targetId);
+        createStreamOffer(targetId);
+      });
     }
   }, [cameraOn, screenSharing]);
 
@@ -913,9 +929,17 @@ export default function CandidateJoin() {
 
   const createStreamOffer = useCallback(async (targetId) => {
     // Close existing connection to this target
-    peerConnectionsRef.current[targetId]?.close();
+    if (peerConnectionsRef.current[targetId]) {
+      peerConnectionsRef.current[targetId].close();
+      delete peerConnectionsRef.current[targetId];
+    }
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS,
+      iceCandidatePoolSize: 4,           // pre-gather relay candidates
+      bundlePolicy: 'max-bundle',        // single transport for all media
+      rtcpMuxPolicy: 'require',          // multiplex RTP/RTCP
+    });
     peerConnectionsRef.current[targetId] = pc;
 
     let tracksAdded = 0;
@@ -926,13 +950,8 @@ export default function CandidateJoin() {
         if (track.readyState === 'live') {
           pc.addTrack(track, streamRef.current);
           tracksAdded++;
-          console.log('[Candidate WebRTC] Added track:', track.kind, track.label, 'state:', track.readyState);
-        } else {
-          console.warn('[Candidate WebRTC] Skipping ended track:', track.kind, track.label);
         }
       });
-    } else {
-      console.warn('[Candidate WebRTC] No camera stream available');
     }
 
     // Add screen share tracks
@@ -941,17 +960,13 @@ export default function CandidateJoin() {
         if (track.readyState === 'live') {
           pc.addTrack(track, screenStreamRef.current);
           tracksAdded++;
-          console.log('[Candidate WebRTC] Added screen track:', track.kind, track.label, 'state:', track.readyState);
-        } else {
-          console.warn('[Candidate WebRTC] Skipping ended screen track:', track.kind, track.label);
         }
       });
-    } else {
-      console.warn('[Candidate WebRTC] No screen stream available');
     }
 
-    console.log('[Candidate WebRTC] Total tracks added:', tracksAdded);
+    console.log('[Candidate WebRTC] Offer for', targetId, '— tracks:', tracksAdded);
 
+    // Trickle ICE — send candidates as they arrive for faster connection
     pc.onicecandidate = (event) => {
       if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
@@ -962,11 +977,46 @@ export default function CandidateJoin() {
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      console.log('[Candidate WebRTC] Connection state:', pc.connectionState);
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+    // Monitor ICE connection state for faster failure detection
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      console.log('[Candidate WebRTC] ICE state:', state, 'for', targetId);
+      if (state === 'failed') {
+        // ICE failed — close and let HR re-request
         pc.close();
         delete peerConnectionsRef.current[targetId];
+      } else if (state === 'disconnected') {
+        // ICE disconnected — attempt ICE restart after 3s
+        setTimeout(() => {
+          if (pc.iceConnectionState === 'disconnected' && peerConnectionsRef.current[targetId] === pc) {
+            console.log('[Candidate WebRTC] ICE restart for', targetId);
+            pc.restartIce();
+          }
+        }, 3000);
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') {
+        pc.close();
+        delete peerConnectionsRef.current[targetId];
+      }
+    };
+
+    // Handle renegotiation (e.g., when tracks are added/removed later)
+    pc.onnegotiationneeded = async () => {
+      if (peerConnectionsRef.current[targetId] !== pc) return;
+      try {
+        const offer = await pc.createOffer();
+        if (pc.signalingState !== 'stable') return;
+        await pc.setLocalDescription(offer);
+        wsRef.current?.send(JSON.stringify({
+          type: 'webrtc_offer',
+          target: targetId,
+          offer: pc.localDescription.toJSON(),
+        }));
+      } catch (e) {
+        console.error('[Candidate WebRTC] Renegotiation error:', e);
       }
     };
 
@@ -1113,14 +1163,18 @@ export default function CandidateJoin() {
       setCurrentQuestion(res.data.question);
       setCurrentRound(res.data.round || 'Technical');
       setTimeStatus(res.data.time_status);
-      setQuestionNumber(1);
+      setQuestionNumber(res.data.question?.question_number || 1);
       setEvaluation(null);
       setAnswer('');
       setCodeText('');
 
-      // ── Face Registration Phase (blocks before questions) ──
-      setFaceRegPhase('registering');
-      setPhase('face_registration');
+      // ── Face Registration Phase (skip if resuming — already registered) ──
+      if (res.data.resumed) {
+        setPhase('interview');
+        toast.success('Resuming your interview from where you left off', { duration: 3000 });
+      } else {
+        setFaceRegPhase('registering');
+        setPhase('face_registration');
       let regCount = 0;
       const regTarget = 7;
       const doRegister = async () => {
@@ -1150,6 +1204,7 @@ export default function CandidateJoin() {
         setPhase('interview');
       };
       await doRegister();
+      }
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to start interview');
     } finally {
@@ -1320,7 +1375,7 @@ export default function CandidateJoin() {
               )}
 
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-800">
-                <p><strong>Two Rounds:</strong> Technical (70% cutoff to proceed) → HR</p>
+                <p><strong>Two Rounds:</strong> Technical ({info?.technical_cutoff || 70}% cutoff to proceed) → HR</p>
               </div>
 
               {permissionDenied && (
@@ -1348,13 +1403,19 @@ export default function CandidateJoin() {
                 </div>
               </div>
 
+              {info?.ai_session_status === 'in_progress' && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+                  <p><strong>📋 Resume Available:</strong> You have an interview in progress. Click below to continue from where you left off.</p>
+                </div>
+              )}
+
               <button
                 onClick={startInterview}
                 disabled={loading || !candidateName.trim() || isMobileDevice}
                 className="w-full gradient-bg text-white py-3 rounded-xl font-semibold flex items-center justify-center space-x-2 hover:opacity-90 transition disabled:opacity-50"
               >
                 {loading ? <Loader2 className="animate-spin" size={20} /> : <Send size={18} />}
-                <span>{loading ? 'Preparing...' : isMobileDevice ? 'Desktop Required' : 'Start Interview'}</span>
+                <span>{loading ? 'Preparing...' : isMobileDevice ? 'Desktop Required' : info?.ai_session_status === 'in_progress' ? 'Resume Interview' : 'Start Interview'}</span>
               </button>
             </div>
           </div>
@@ -1372,7 +1433,7 @@ export default function CandidateJoin() {
             <CheckCircle size={64} className="mx-auto text-green-500 mb-4" />
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Technical Round Passed!</h1>
             <p className="text-gray-500 mb-4">
-              Score: <span className="font-bold text-green-600">{techScore}%</span> (Cutoff: 70%)
+              Score: <span className="font-bold text-green-600">{techScore}%</span> (Cutoff: {info?.technical_cutoff || 70}%)
             </p>
             <p className="text-lg text-primary-600 font-semibold">Proceeding to HR Round...</p>
             <Loader2 className="animate-spin mx-auto mt-4 text-primary-500" size={32} />
@@ -1394,7 +1455,7 @@ export default function CandidateJoin() {
               Technical Score: <span className="font-bold text-red-600">{techScore}%</span>
             </p>
             <p className="text-gray-600 mb-6">
-              Your technical score did not meet the 70% cutoff for the HR round.
+              Your technical score did not meet the {info?.technical_cutoff || 70}% cutoff for the HR round.
             </p>
             <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">
               Your responses have been recorded and will be reviewed by the hiring team.

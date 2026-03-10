@@ -30,6 +30,7 @@ export default function CreateSession() {
     description: '',
     job_description: '',
     experience_level: 'mid',
+    technical_cutoff: 70,
   });
   const [weights, setWeights] = useState({ ...DEFAULT_WEIGHTS });
   const [showWeights, setShowWeights] = useState(false);
@@ -56,6 +57,7 @@ export default function CreateSession() {
       const res = await interviewAPI.createSession({
         ...form,
         duration_minutes: parseInt(form.duration_minutes),
+        technical_cutoff: parseFloat(form.technical_cutoff),
         scheduled_time: form.scheduled_time,
         scoring_weights,
       });
@@ -170,6 +172,34 @@ export default function CreateSession() {
               placeholder="Optional session description or instructions for candidates..."
               className={inputClass + " resize-none"}
             />
+          </div>
+
+          {/* Technical Cutoff Score */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Technical Round Cutoff Score (%)</label>
+            <div className="flex items-center gap-4">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={form.technical_cutoff}
+                onChange={(e) => setForm({ ...form, technical_cutoff: Number(e.target.value) })}
+                className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+              />
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={form.technical_cutoff}
+                  onChange={(e) => setForm({ ...form, technical_cutoff: Math.max(0, Math.min(100, Number(e.target.value))) })}
+                  className="w-16 px-2 py-1.5 text-center border border-gray-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary-500 outline-none"
+                />
+                <span className="text-sm text-gray-500">%</span>
+              </div>
+            </div>
+            <p className="mt-1.5 text-xs text-gray-400">Candidates must score at or above this threshold in the Technical round to proceed to the HR round. Default: 70%.</p>
           </div>
 
           {/* Scoring Weights */}

@@ -89,6 +89,7 @@ class InterviewSessionCreate(BaseModel):
     job_description: Optional[str] = None
     experience_level: Optional[str] = None
     scoring_weights: Optional[ScoringWeights] = None
+    technical_cutoff: float = Field(default=70.0, ge=0, le=100)
 
 
 class InterviewSessionResponse(BaseModel):
@@ -103,6 +104,7 @@ class InterviewSessionResponse(BaseModel):
     created_by: str
     candidate_count: int = 0
     created_at: datetime
+    technical_cutoff: float = 70.0
 
 
 # ─── Candidate ──────────────────────────────────────

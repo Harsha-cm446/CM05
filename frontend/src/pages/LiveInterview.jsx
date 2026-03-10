@@ -205,12 +205,10 @@ export default function LiveInterview() {
         console.log('[WS] HR connected to interview room');
         setWsConnected(true);
         reconnectAttempts = 0;
-        // Request all candidate stream statuses so we discover candidates that joined before us
-        setTimeout(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'request_all_streams' }));
-          }
-        }, 500);
+        // Request all candidate stream statuses immediately — no delay
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'request_all_streams' }));
+        }
       };
 
       ws.onmessage = (event) => {
@@ -289,8 +287,49 @@ export default function LiveInterview() {
             has_screen: data.has_screen,
           },
         }));
+        // Proactive auto-connect: immediately establish gallery peer for ANY
+        // candidate that announces streams, regardless of which tab is active.
+        // This ensures video is already connected when HR opens gallery.
+        if (data.from && (data.has_camera || data.has_screen)) {
+          const pc = peerConnectionRef.current;
+          const pcDead = !pc || pc.connectionState === 'failed' || pc.connectionState === 'closed';
+          // Single-view: re-request if watching this candidate and connection died
+          setWatchingCandidate((currentWatching) => {
+            if (currentWatching === data.from && pcDead) {
+              console.log('[HR WS] Auto-re-requesting stream for watched candidate:', data.from);
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
+              }
+            }
+            return currentWatching;
+          });
+          // Gallery: proactively connect to this candidate
+          const galleryEntry = galleryPeersRef.current[data.from];
+          if (galleryEntry !== undefined) {
+            // Already tracked — re-request only if dead
+            const galleryPcDead = !galleryEntry.pc || galleryEntry.pc.connectionState === 'failed' || galleryEntry.pc.connectionState === 'closed';
+            if (galleryPcDead) {
+              console.log('[HR WS] Re-requesting dead gallery stream for:', data.from);
+              galleryPeersRef.current[data.from] = { pc: null, name: data.name || galleryEntry.name };
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
+              }
+            }
+          } else {
+            // New candidate — proactively pre-connect so gallery view is instant
+            console.log('[HR WS] Proactive gallery pre-connect for:', data.from, data.name);
+            galleryPeersRef.current[data.from] = { pc: null, name: data.name || data.from };
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
+            }
+          }
+        }
         break;
       case 'user_joined':
+        // A candidate just joined — request their stream status immediately
+        if (data.conn_id && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'request_all_streams' }));
+        }
         break;
       case 'user_left':
         setStreamableCandidates((prev) => {
@@ -299,6 +338,24 @@ export default function LiveInterview() {
           return next;
         });
         cleanupGalleryPeer(data.conn_id);
+        break;
+      case 'candidate_disconnected':
+        // Candidate WebSocket disconnected — clean up their streams but keep stream_status
+        // so when they reconnect and send stream_ready, we can auto-re-request
+        console.log('[HR WS] Candidate disconnected:', data.conn_id, data.name);
+        cleanupGalleryPeer(data.conn_id);
+        // If watching this candidate in single view, clean up the peer connection
+        setWatchingCandidate((currentWatching) => {
+          if (currentWatching === data.conn_id) {
+            if (peerConnectionRef.current) {
+              peerConnectionRef.current.close();
+              peerConnectionRef.current = null;
+            }
+            setCameraStream(null);
+            setScreenStream(null);
+          }
+          return currentWatching;
+        });
         break;
       case 'webrtc_offer':
         console.log('[HR WS] Got WebRTC offer from:', data.from);
@@ -334,7 +391,12 @@ export default function LiveInterview() {
     setScreenStream(null);
     pendingICERef.current = [];
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS,
+      iceCandidatePoolSize: 4,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
+    });
     peerConnectionRef.current = pc;
 
     // Collect incoming streams — identify by track kind and stream id
@@ -389,7 +451,7 @@ export default function LiveInterview() {
           peerConnectionRef.current = null;
           setCameraStream(null);
           setScreenStream(null);
-          // Auto-retry after 2s
+          // Auto-retry after 1s
           setTimeout(() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               console.log('[HR WebRTC] Auto-retrying stream request after failure');
@@ -398,10 +460,10 @@ export default function LiveInterview() {
                 target: data.from,
               }));
             }
-          }, 2000);
+          }, 1000);
         }
       } else if (pc.connectionState === 'disconnected') {
-        // "disconnected" may recover on its own — wait 5s before closing
+        // "disconnected" may recover on its own — wait 3s before closing
         setTimeout(() => {
           if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
             if (peerConnectionRef.current === pc) {
@@ -419,7 +481,23 @@ export default function LiveInterview() {
               }
             }
           }
-        }, 5000);
+        }, 3000);
+      }
+    };
+
+    // Monitor ICE connection state for faster failure detection
+    pc.oniceconnectionstatechange = () => {
+      console.log('[HR WebRTC] ICE state:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed' && peerConnectionRef.current === pc) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+        setCameraStream(null);
+        setScreenStream(null);
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
+          }
+        }, 1000);
       }
     };
 
@@ -486,8 +564,8 @@ export default function LiveInterview() {
     };
 
     sendRequest();
-    // Auto-retry at 3s, 6s, 10s if no peer connection established
-    [3000, 6000, 10000].forEach((delay) => {
+    // Fast auto-retry at 1s, 2s, 4s if no peer connection established
+    [1000, 2000, 4000].forEach((delay) => {
       setTimeout(() => {
         if (!peerConnectionRef.current || peerConnectionRef.current.connectionState === 'failed') {
           console.log(`[HR] Retrying stream request (${delay / 1000}s)`);
@@ -523,7 +601,12 @@ export default function LiveInterview() {
       existing.pc.close();
     }
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS,
+      iceCandidatePoolSize: 4,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
+    });
     const candidateName = existing?.name || token;
     galleryPeersRef.current[token] = { pc, name: candidateName };
 
@@ -570,8 +653,42 @@ export default function LiveInterview() {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      if (pc.connectionState === 'failed') {
+        console.log('[Gallery] Peer connection failed for', token, '— retrying in 1s');
         cleanupGalleryPeer(token);
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            galleryPeersRef.current[token] = { pc: null, name: candidateName };
+            wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+          }
+        }, 1000);
+      } else if (pc.connectionState === 'disconnected') {
+        setTimeout(() => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            console.log('[Gallery] Peer connection stale for', token, '— retrying');
+            cleanupGalleryPeer(token);
+            setTimeout(() => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                galleryPeersRef.current[token] = { pc: null, name: candidateName };
+                wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+              }
+            }, 1000);
+          }
+        }, 3000);
+      }
+    };
+
+    // ICE-level failure detection (fires faster than connectionState)
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'failed') {
+        console.log('[Gallery] ICE failed for', token, '— retrying');
+        cleanupGalleryPeer(token);
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            galleryPeersRef.current[token] = { pc: null, name: candidateName };
+            wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+          }
+        }, 1000);
       }
     };
 
@@ -641,6 +758,28 @@ export default function LiveInterview() {
       }
     });
   }, [candidates, streamableCandidates, cleanupGalleryPeer, requestGalleryStream]);
+
+  // ── Periodic gallery health check: detect and retry dead gallery peer connections ──
+  useEffect(() => {
+    if (activeTab !== 'gallery') return;
+    const healthCheck = setInterval(() => {
+      const peers = galleryPeersRef.current;
+      Object.entries(peers).forEach(([token, entry]) => {
+        if (!entry?.pc) return;
+        const state = entry.pc.connectionState;
+        if (state === 'failed' || state === 'closed') {
+          console.log('[Gallery Health] Dead peer detected:', token, state);
+          cleanupGalleryPeer(token);
+          // Re-request if candidate is still streamable
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            galleryPeersRef.current[token] = { pc: null, name: entry.name || token };
+            wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+          }
+        }
+      });
+    }, 8000);
+    return () => clearInterval(healthCheck);
+  }, [activeTab, cleanupGalleryPeer]);
 
   const viewReport = async (candidateToken) => {
     setReportLoading(true);

@@ -49,6 +49,21 @@ class ConnectionManager:
                 "stream_status": self.stream_status.get(room_id, {}),
                 "your_id": conn_id,
             })
+
+            # Push model: immediately tell all streaming candidates to create
+            # offers for this new HR observer — instant video on HR connect
+            for cid, status in self.stream_status.get(room_id, {}).items():
+                if status.get("has_camera") or status.get("has_screen"):
+                    candidate_ws = self.rooms.get(room_id, {}).get(cid)
+                    if candidate_ws:
+                        try:
+                            await candidate_ws.send_json({
+                                "type": "request_stream",
+                                "from": conn_id,
+                            })
+                        except Exception:
+                            pass
+
             # Do NOT broadcast HR join to candidates — HR is invisible
         else:
             # Candidate joined — notify only HR watchers (not other candidates)
@@ -237,6 +252,16 @@ async def interview_websocket(websocket: WebSocket, room_id: str):
                     "has_camera": has_camera,
                     "has_screen": has_screen,
                 })
+                # Push model: when candidate has streams, tell ALL HR observers to
+                # immediately request a stream from this candidate so video appears
+                # without HR needing to click anything.
+                if has_camera or has_screen:
+                    hr_conns = manager.hr_connections.get(room_id, {})
+                    for hr_id in list(hr_conns.keys()):
+                        await manager.send_to(room_id, conn_id, {
+                            "type": "request_stream",
+                            "from": hr_id,
+                        })
 
             elif msg_type == "request_all_streams":
                 # HR requests current stream status of all candidates

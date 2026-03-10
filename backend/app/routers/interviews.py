@@ -46,6 +46,7 @@ async def create_session(data: InterviewSessionCreate, hr_user: dict = Depends(g
         "job_description": data.job_description or "",
         "experience_level": data.experience_level or "",
         "scoring_weights": weights_dict,
+        "technical_cutoff": data.technical_cutoff,
         "session_token": session_token,
         "status": "pending",
         "created_by": str(hr_user["_id"]),
