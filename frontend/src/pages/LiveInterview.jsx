@@ -205,6 +205,12 @@ export default function LiveInterview() {
         console.log('[WS] HR connected to interview room');
         setWsConnected(true);
         reconnectAttempts = 0;
+        // Request all candidate stream statuses so we discover candidates that joined before us
+        setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'request_all_streams' }));
+          }
+        }, 500);
       };
 
       ws.onmessage = (event) => {
@@ -242,9 +248,37 @@ export default function LiveInterview() {
     };
   }, [sessionId]);
 
+  // Helper: populate streamableCandidates from a stream_status map { conn_id: {name, has_camera, has_screen} }
+  const applyStreamStatus = useCallback((streams) => {
+    if (!streams || typeof streams !== 'object') return;
+    setStreamableCandidates((prev) => {
+      const next = { ...prev };
+      Object.entries(streams).forEach(([connId, info]) => {
+        next[connId] = {
+          name: info.name || connId,
+          has_camera: !!info.has_camera,
+          has_screen: !!info.has_screen,
+        };
+      });
+      return next;
+    });
+  }, []);
+
   const handleWSMessage = useCallback((data) => {
     console.log('[HR WS] Received:', data.type, data.from || '');
     switch (data.type) {
+      case 'room_state':
+        // On (re)connect the backend sends participants + persisted stream_status
+        if (data.stream_status) {
+          applyStreamStatus(data.stream_status);
+        }
+        break;
+      case 'all_stream_status':
+        // Response to request_all_streams — bulk update
+        if (data.streams) {
+          applyStreamStatus(data.streams);
+        }
+        break;
       case 'stream_ready':
         console.log('[HR WS] Candidate stream ready:', data.from, 'camera:', data.has_camera, 'screen:', data.has_screen);
         setStreamableCandidates((prev) => ({
@@ -286,6 +320,9 @@ export default function LiveInterview() {
     }
   }, []);
 
+  // ICE candidate queue — candidates arriving before remote description is set
+  const pendingICERef = useRef([]);
+
   const handleWebRTCOffer = useCallback(async (data) => {
     console.log('[HR WebRTC] Handling offer from:', data.from);
     // Close previous peer connection only — do NOT reset watchingCandidate
@@ -295,6 +332,7 @@ export default function LiveInterview() {
     }
     setCameraStream(null);
     setScreenStream(null);
+    pendingICERef.current = [];
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConnectionRef.current = pc;
@@ -344,18 +382,59 @@ export default function LiveInterview() {
 
     pc.onconnectionstatechange = () => {
       console.log('[HR WebRTC] Connection state:', pc.connectionState);
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        // Only close the PC, don't reset watching state — allow re-request
+      if (pc.connectionState === 'failed') {
+        // Connection failed — close PC and auto-retry requesting the stream
         if (peerConnectionRef.current === pc) {
           peerConnectionRef.current.close();
           peerConnectionRef.current = null;
           setCameraStream(null);
           setScreenStream(null);
+          // Auto-retry after 2s
+          setTimeout(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              console.log('[HR WebRTC] Auto-retrying stream request after failure');
+              wsRef.current.send(JSON.stringify({
+                type: 'request_stream',
+                target: data.from,
+              }));
+            }
+          }, 2000);
         }
+      } else if (pc.connectionState === 'disconnected') {
+        // "disconnected" may recover on its own — wait 5s before closing
+        setTimeout(() => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            if (peerConnectionRef.current === pc) {
+              peerConnectionRef.current.close();
+              peerConnectionRef.current = null;
+              setCameraStream(null);
+              setScreenStream(null);
+              // Auto-retry
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                console.log('[HR WebRTC] Auto-retrying stream after prolonged disconnect');
+                wsRef.current.send(JSON.stringify({
+                  type: 'request_stream',
+                  target: data.from,
+                }));
+              }
+            }
+          }
+        }, 5000);
       }
     };
 
     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+    // Flush any ICE candidates that arrived while we were processing the offer
+    for (const candidate of pendingICERef.current) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('[ICE] Error adding queued candidate:', err);
+      }
+    }
+    pendingICERef.current = [];
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
@@ -369,11 +448,20 @@ export default function LiveInterview() {
   const handleICECandidate = useCallback(async (data) => {
     const pc = peerConnectionRef.current;
     if (pc && data.candidate) {
+      // If remote description isn't set yet, queue the candidate
+      if (!pc.remoteDescription) {
+        console.log('[ICE] Queuing candidate (remote desc not set yet)');
+        pendingICERef.current.push(data.candidate);
+        return;
+      }
       try {
         await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
       } catch (err) {
         console.error('[ICE] Error adding candidate:', err);
       }
+    } else if (data.candidate) {
+      // PC doesn't exist yet — queue it
+      pendingICERef.current.push(data.candidate);
     }
   }, []);
 
@@ -386,29 +474,27 @@ export default function LiveInterview() {
     setWatchingCandidate(candidateToken);
     setCameraStream(null);
     setScreenStream(null);
-    wsRef.current.send(JSON.stringify({
-      type: 'request_stream',
-      target: candidateToken,
-    }));
-    // Auto-retry after 3s and 6s if we don't get streams
-    setTimeout(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN && !peerConnectionRef.current) {
-        console.log('[HR] Retrying stream request (3s)');
+    pendingICERef.current = [];
+
+    const sendRequest = () => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'request_stream',
           target: candidateToken,
         }));
       }
-    }, 3000);
-    setTimeout(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN && !peerConnectionRef.current) {
-        console.log('[HR] Retrying stream request (6s)');
-        wsRef.current.send(JSON.stringify({
-          type: 'request_stream',
-          target: candidateToken,
-        }));
-      }
-    }, 6000);
+    };
+
+    sendRequest();
+    // Auto-retry at 3s, 6s, 10s if no peer connection established
+    [3000, 6000, 10000].forEach((delay) => {
+      setTimeout(() => {
+        if (!peerConnectionRef.current || peerConnectionRef.current.connectionState === 'failed') {
+          console.log(`[HR] Retrying stream request (${delay / 1000}s)`);
+          sendRequest();
+        }
+      }, delay);
+    });
   }, []);
 
   const closeStream = useCallback(() => {

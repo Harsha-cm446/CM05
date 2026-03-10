@@ -784,33 +784,71 @@ export default function CandidateJoin() {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${interviewSessionId}?token=${token}&role=candidate&name=${encodeURIComponent(candidateName)}`;
     }
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      console.log('[WS] Connected to interview room, session:', interviewSessionId);
-      const streamStatus = {
-        type: 'stream_ready',
-        has_camera: cameraOn,
-        has_screen: !!screenStreamRef.current,
-      };
-      console.log('[WS] Sending stream_ready:', streamStatus);
-      ws.send(JSON.stringify(streamStatus));
-    };
+    let ws;
+    let reconnectTimer;
+    let reconnectAttempts = 0;
+    let heartbeatInterval;
+    let alive = true; // tracks whether the effect is still active
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleWSMessage(data).catch(e => console.error('[Candidate WS] Message handler error:', e));
-      } catch (e) {
-        console.error('[Candidate WS] Parse error:', e);
+    const sendStreamReady = (socket) => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'stream_ready',
+          has_camera: !!streamRef.current,
+          has_screen: !!screenStreamRef.current,
+        }));
       }
     };
 
-    ws.onclose = () => console.log('[WS] Disconnected');
+    const connect = () => {
+      if (!alive) return;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('[WS] Connected to interview room, session:', interviewSessionId);
+        reconnectAttempts = 0;
+        // Send initial stream status
+        sendStreamReady(ws);
+        // Start heartbeat: re-send stream_ready every 10s so HR always has fresh status
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = setInterval(() => sendStreamReady(ws), 10000);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleWSMessage(data).catch(e => console.error('[Candidate WS] Message handler error:', e));
+        } catch (e) {
+          console.error('[Candidate WS] Parse error:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('[WS] Disconnected');
+        clearInterval(heartbeatInterval);
+        // Auto-reconnect with exponential backoff (max 10s)
+        if (alive && reconnectAttempts < 50) {
+          const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+          reconnectAttempts++;
+          console.log(`[WS] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts})`);
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.error('[WS] Error:', e);
+      };
+    };
+
+    connect();
 
     return () => {
-      ws.close();
+      alive = false;
+      clearTimeout(reconnectTimer);
+      clearInterval(heartbeatInterval);
+      if (wsRef.current) wsRef.current.close();
       Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
       peerConnectionsRef.current = {};
     };
@@ -841,6 +879,16 @@ export default function CandidateJoin() {
       case 'request_stream':
         console.log('[Candidate] HR requesting stream, creating offer for:', data.from);
         await createStreamOffer(data.from);
+        break;
+      case 'request_stream_status':
+        // HR asked us to re-announce our stream status
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'stream_ready',
+            has_camera: !!streamRef.current,
+            has_screen: !!screenStreamRef.current,
+          }));
+        }
         break;
       case 'webrtc_answer':
         {
