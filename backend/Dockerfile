@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
 COPY ai-engine/ ./ai-engine/
 
+# Pre-download NLTK data for synonyms and text processing
+RUN python -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4'); nltk.download('punkt'); nltk.download('punkt_tab');"
+
 # Pre-download Vosk STT model during build so it's available instantly at runtime
 # Uses the smaller model for Docker deployments (40MB vs 1.8GB)
 # Set VOSK_MODEL_NAME env var to override at runtime
