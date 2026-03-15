@@ -21,6 +21,7 @@ async def close_mongo_connection():
     global client
     if client:
         client.close()
+        client = None
         print("🔌 MongoDB connection closed")
 
 

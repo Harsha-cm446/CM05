@@ -707,21 +707,25 @@ class MultimodalAnalysisEngine:
         if not answer:
             return 50.0
 
-        answer_lower = answer.lower()
-        words = answer_lower.split()
+        import re
+        answer_clean = re.sub(r'[^\w\s]', '', answer.lower())
+        words = answer_clean.split()
         total_words = len(words)
         if total_words == 0:
             return 50.0
+            
+        padded_answer = f" {answer_clean} "
 
-        hedges = ['i think', 'maybe', 'probably', 'might', 'could', 'sort of', 'kind of', 'i guess', "i'm not sure", 'perhaps', 'basically']
+        hedges = ['i think', 'maybe', 'probably', 'might', 'could', 'sort of', 'kind of', 'i guess', "im not sure", 'perhaps', 'basically']
         fillers = ['um', 'uh', 'like', 'you know', 'mean', 'actually', 'literally']
         absolutes = ['always', 'never', 'must', 'will', 'certainly', 'definitely', 'absolutely']
         strong_words = ['because', 'therefore', 'consequently', 'clearly', 'specifically', 'in fact']
 
-        hedge_count = sum(1 for h in hedges if h in answer_lower)
-        filler_count = sum(1 for f in fillers if f in words)
-        absolute_count = sum(1 for a in absolutes if a in words)
-        strong_count = sum(1 for s in strong_words if s in answer_lower)
+        # Count total occurrences, ensuring whole phrases match
+        hedge_count = sum(padded_answer.count(f" {h} ") for h in hedges)
+        filler_count = sum(padded_answer.count(f" {f} ") for f in fillers)
+        absolute_count = sum(padded_answer.count(f" {a} ") for a in absolutes)
+        strong_count = sum(padded_answer.count(f" {s} ") for s in strong_words)
 
         # Baseline confidence
         confidence = 75.0
@@ -775,9 +779,14 @@ class MultimodalAnalysisEngine:
             "literally", "sort of", "kind of", "i mean", "right",
             "so", "well", "okay", "hmm",
         }
-        transcript_lower = transcript.lower()
+        
+        # Clean transcript of punctuation to properly match whole filler words
+        import re
+        transcript_clean = re.sub(r'[^\w\s]', '', transcript.lower())
+        padded_transcript = f" {transcript_clean} "
+        
         filler_count = sum(
-            transcript_lower.count(f) for f in filler_words
+            padded_transcript.count(f" {f} ") for f in filler_words
         )
         filler_ratio = filler_count / max(word_count, 1)
 
