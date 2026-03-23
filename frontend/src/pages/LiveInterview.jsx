@@ -1798,13 +1798,13 @@ export default function LiveInterview() {
                         onClick={() => setEnlargedFeed(candidate.token)}
                       >
                         {/* Video area */}
-                        <div className={`relative bg-black grid ${activeFeeds.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`} style={{ aspectRatio: '16/9' }}>
+                        <div className={`relative bg-black grid ${activeFeeds.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1 p-1`} style={{ aspectRatio: '16/9' }}>
                           {activeFeeds.map((feed, idx) => (
-                            <div key={`${candidate.token}-${feed.type}-${idx}`} className="relative h-full w-full border-r border-gray-900 last:border-0 bg-gray-900">
+                            <div key={`${candidate.token}-${feed.type}-${idx}`} className="relative h-full w-full rounded-lg overflow-hidden bg-gray-900 border border-gray-800">
                                 <GalleryVideoTile
                                   token={candidate.token}
                                   stream={feed.stream}
-                                  candidateName={''}
+                                  candidateName={feed.type === 'screen' ? 'Screen' : 'Camera'}
                                   type={feed.type}
                                   onEnlarge={() => setEnlargedFeed(candidate.token)}
                                 />
@@ -1812,8 +1812,8 @@ export default function LiveInterview() {
                           ))}
                           {/* LIVE badge (if any active stream) */}
                           {(cameraStream || screenStream) && (
-                            <div className="absolute top-2 right-2 group-hover:top-auto group-hover:bottom-2 group-hover:right-2 transition-all opacity-0 group-hover:opacity-100 z-10">
-                              <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1">
+                            <div className="absolute top-3 right-3 group-hover:top-auto group-hover:bottom-3 group-hover:right-3 transition-all opacity-0 group-hover:opacity-100 z-10">
+                              <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1 shadow-sm">
                                 <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
                                 <span>LIVE</span>
                               </span>
@@ -1821,8 +1821,8 @@ export default function LiveInterview() {
                           )}
                           {/* Enlarge icon on center screen on hover */}
                           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition pointer-events-none z-10">
-                            <div className="p-2 bg-black/60 rounded-full">
-                              <Maximize2 size={24} className="text-white" />
+                            <div className="p-3 bg-black/60 rounded-full backdrop-blur-sm border border-white/10">
+                              <Maximize2 size={24} className="text-white drop-shadow-md" />
                             </div>
                           </div>
                         </div>
