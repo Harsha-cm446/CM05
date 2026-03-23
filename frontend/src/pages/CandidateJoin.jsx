@@ -103,6 +103,7 @@ export default function CandidateJoin() {
   const synthRef = useRef(window.speechSynthesis);
   const wsRef = useRef(null);
   const peerConnectionsRef = useRef({});
+  const pendingICERef = useRef({});  // targetId -> [candidates] — queued ICE before remote desc is set
   const screenStreamRef = useRef(null);
 
   // Vosk STT WebSocket refs
@@ -1025,6 +1026,16 @@ export default function CandidateJoin() {
           const pc = peerConnectionsRef.current[data.from];
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+            // Flush any ICE candidates that arrived before remote description was set
+            const queued = pendingICERef.current[data.from] || [];
+            pendingICERef.current[data.from] = [];
+            for (const candidate of queued) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+              } catch (err) {
+                console.error('[Candidate ICE] Error adding queued candidate:', err);
+              }
+            }
           }
         }
         break;
@@ -1032,7 +1043,22 @@ export default function CandidateJoin() {
         {
           const pc = peerConnectionsRef.current[data.from];
           if (pc && data.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            // Queue ICE candidates if remote description isn't set yet
+            if (!pc.remoteDescription) {
+              console.log('[Candidate ICE] Queuing candidate (remote desc not set yet) for:', data.from);
+              if (!pendingICERef.current[data.from]) pendingICERef.current[data.from] = [];
+              pendingICERef.current[data.from].push(data.candidate);
+              return;
+            }
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            } catch (err) {
+              console.error('[Candidate ICE] Error adding candidate:', err);
+            }
+          } else if (data.candidate) {
+            // PC doesn't exist yet — queue it
+            if (!pendingICERef.current[data.from]) pendingICERef.current[data.from] = [];
+            pendingICERef.current[data.from].push(data.candidate);
           }
         }
         break;
@@ -1052,6 +1078,8 @@ export default function CandidateJoin() {
       peerConnectionsRef.current[targetId].close();
       delete peerConnectionsRef.current[targetId];
     }
+    // Clear any pending ICE candidates from previous connection
+    pendingICERef.current[targetId] = [];
 
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
@@ -1063,7 +1091,7 @@ export default function CandidateJoin() {
 
     let tracksAdded = 0;
 
-    // Add camera tracks
+    // Add camera tracks (read refs at call time — they're mutable)
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => {
         if (track.readyState === 'live') {
@@ -1084,6 +1112,24 @@ export default function CandidateJoin() {
     }
 
     console.log('[Candidate WebRTC] Offer for', targetId, '— tracks:', tracksAdded);
+
+    // If no live tracks available, don't send a useless empty offer.
+    // Instead, close the PC and retry after a delay (streams may not be ready yet).
+    if (tracksAdded === 0) {
+      console.warn('[Candidate WebRTC] No live tracks available for', targetId, '— deferring offer (retry in 1s)');
+      pc.close();
+      delete peerConnectionsRef.current[targetId];
+      // Retry after 1s — streams might be initializing
+      setTimeout(() => {
+        if (streamRef.current || screenStreamRef.current) {
+          console.log('[Candidate WebRTC] Retrying offer for', targetId, 'after tracks became available');
+          createStreamOffer(targetId);
+        } else {
+          console.log('[Candidate WebRTC] Still no tracks for', targetId, '— will retry when streams change');
+        }
+      }, 1000);
+      return;
+    }
 
     // Trickle ICE — send candidates as they arrive for faster connection
     pc.onicecandidate = (event) => {
@@ -1125,7 +1171,7 @@ export default function CandidateJoin() {
               delete peerConnectionsRef.current[targetId];
             }
           }
-        }, 5000); // Increased from 3s → 5s for more recovery time
+        }, 5000);
       }
     };
 

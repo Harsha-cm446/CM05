@@ -401,22 +401,39 @@ export default function LiveInterview() {
         const isWatching = watchingCandidateRef.current === data.from;
         const inGallery  = galleryPeersRef.current[data.from] !== undefined;
 
-        if (inGallery || !isWatching) {
+        if (isWatching) {
+            // Single-view (Watch button) takes priority when actively watching
+            handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer]', e));
+            // Also update gallery peer so gallery view stays in sync
+            if (inGallery) {
+                if (!galleryPeersRef.current[data.from]) {
+                    galleryPeersRef.current[data.from] = { pc: null, name: data.from };
+                    galleryICEQueueRef.current[data.from] = [];
+                }
+                handleGalleryOffer(data).catch(e => console.error('[Gallery Offer]', e));
+            }
+        } else {
+            // Gallery view — route to gallery handler
             if (!galleryPeersRef.current[data.from]) {
                 galleryPeersRef.current[data.from] = { pc: null, name: data.from };
                 galleryICEQueueRef.current[data.from] = [];
             }
             handleGalleryOffer(data).catch(e => console.error('[Gallery Offer]', e));
-        } else {
-            handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer]', e));
         }
         break;
       }
       case 'ice_candidate':
-        if (galleryPeersRef.current[data.from]?.pc) {
+        if (galleryPeersRef.current[data.from] !== undefined) {
+          // Gallery peer exists — route to gallery ICE handler (handles queuing if PC not ready)
           handleGalleryICE(data).catch(e => console.error('[Gallery ICE] Error:', e));
-        } else {
+        } else if (peerConnectionRef.current && watchingCandidateRef.current === data.from) {
+          // Single-view peer — route to single-view ICE handler
           handleICECandidate(data).catch(e => console.error('[ICE] Error:', e));
+        } else {
+          // Unknown peer — queue in gallery ICE queue for when peer is created
+          console.log('[HR ICE] Queuing ICE for unknown peer:', data.from);
+          if (!galleryICEQueueRef.current[data.from]) galleryICEQueueRef.current[data.from] = [];
+          if (data.candidate) galleryICEQueueRef.current[data.from].push(data.candidate);
         }
         break;
       case 'session_ended':
@@ -839,16 +856,47 @@ export default function LiveInterview() {
 
   // ── Periodic gallery health check: detect dead peers and ensure all candidates connected ──
   // Runs regardless of active tab so streams are always pre-warmed
+  const stuckPeerTimersRef = useRef({}); // token -> timestamp when first seen as stuck
   useEffect(() => {
     const healthCheck = setInterval(() => {
-      // Clean up dead peers
+      // Clean up dead or stuck peers
       const peers = galleryPeersRef.current;
       Object.entries(peers).forEach(([token, entry]) => {
-        if (!entry?.pc) return;
+        if (!entry?.pc) {
+          // Peer entry exists but PC is null — stuck waiting for offer response
+          if (!stuckPeerTimersRef.current[token]) {
+            stuckPeerTimersRef.current[token] = Date.now();
+          } else if (Date.now() - stuckPeerTimersRef.current[token] > 10000) {
+            // Stuck for >10s — re-request stream
+            console.log('[Gallery Health] Stuck peer (no PC) detected:', token, '— re-requesting');
+            delete stuckPeerTimersRef.current[token];
+            galleryPeersRef.current[token] = { pc: null, name: entry.name || token };
+            galleryICEQueueRef.current[token] = [];
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+            }
+          }
+          return;
+        }
+        delete stuckPeerTimersRef.current[token]; // Has a PC, not stuck
         const state = entry.pc.connectionState;
         if (state === 'failed' || state === 'closed') {
           console.log('[Gallery Health] Dead peer detected:', token, state);
           cleanupGalleryPeer(token);
+        } else if (state === 'new') {
+          // Stuck in 'new' — negotiation never completed
+          if (!stuckPeerTimersRef.current[token]) {
+            stuckPeerTimersRef.current[token] = Date.now();
+          } else if (Date.now() - stuckPeerTimersRef.current[token] > 10000) {
+            console.log('[Gallery Health] Stuck peer (state=new) detected:', token, '— re-requesting');
+            delete stuckPeerTimersRef.current[token];
+            cleanupGalleryPeer(token);
+            galleryPeersRef.current[token] = { pc: null, name: entry.name || token };
+            galleryICEQueueRef.current[token] = [];
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+            }
+          }
         }
       });
       // Ensure all streamable candidates have connections
