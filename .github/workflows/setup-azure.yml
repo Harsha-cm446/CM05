@@ -107,6 +107,8 @@ jobs:
                 SMTP_USER="${{ secrets.SMTP_USER }}" \
                 SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
                 EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
+                AGORA_APP_ID="${{ secrets.AGORA_APP_ID }}" \
+                AGORA_APP_CERTIFICATE="${{ secrets.AGORA_APP_CERTIFICATE }}" \
               && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "GEMINI_FALLBACK_API_KEYS=${{ secrets.GEMINI_FALLBACK_API_KEYS }}" "GEMINI_FALLBACK_MODELS=" "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" "OPENROUTER_FALLBACK_MODELS=nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free" \
               && az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars "VLLM_ENDPOINT=${{ secrets.VLLM_ENDPOINT }}" "VLLM_MODEL=${{ secrets.VLLM_MODEL }}" "VLLM_ENABLED=${{ secrets.VLLM_ENABLED }}" \
               && echo "✅ Backend created!" && break \
@@ -175,6 +177,10 @@ jobs:
           echo "   SMTP_PASSWORD  = your-16-char-app-password (no spaces)"
           echo "   EMAIL_FROM     = your-email@gmail.com"
           echo ""
-          echo "3. Run 'Deploy Backend' workflow manually"
-          echo "4. Run 'Deploy Frontend' workflow manually"
+          echo "3. Add Agora secrets (for real-time interviews):"
+          echo "   AGORA_APP_ID          = your-agora-app-id"
+          echo "   AGORA_APP_CERTIFICATE = your-agora-app-certificate"
+          echo ""
+          echo "4. Run 'Deploy Backend' workflow manually"
+          echo "5. Run 'Deploy Frontend' workflow manually"
           echo "========================================="

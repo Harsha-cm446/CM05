@@ -90,7 +90,9 @@ jobs:
               SMTP_PORT="${{ secrets.SMTP_PORT }}" \
               SMTP_USER="${{ secrets.SMTP_USER }}" \
               SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
-              EMAIL_FROM="${{ secrets.EMAIL_FROM }}"
+              EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
+              AGORA_APP_ID="${{ secrets.AGORA_APP_ID }}" \
+              AGORA_APP_CERTIFICATE="${{ secrets.AGORA_APP_CERTIFICATE }}"
           
           # Set Gemini fallback keys and models separately to avoid comma-parsing issues
           az containerapp update \

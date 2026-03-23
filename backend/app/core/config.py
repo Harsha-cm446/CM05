@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # e.g. http://192.168.1.100:5173 or https://abc123.ngrok.io
     PUBLIC_URL: str = ""
 
+    # Agora RTC (real-time video monitoring)
+    AGORA_APP_ID: str = ""
+    AGORA_APP_CERTIFICATE: str = ""
+
     class Config:
         env_file = str(_ENV_FILE)
 

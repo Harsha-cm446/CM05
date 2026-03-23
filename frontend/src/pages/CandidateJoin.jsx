@@ -7,46 +7,9 @@ import {
   CheckCircle, Volume2, VolumeX, Timer, AlertTriangle, XCircle, Code,
   Monitor, Shield, UserX, MonitorX, Eye, LogOut, Maximize2, Minimize2,
 } from 'lucide-react';
+import useToken from '../hooks/useToken';
+import useAgora, { generateBaseId } from '../hooks/useAgora';
 
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-  // Free TURN servers for NAT traversal (mobile networks / symmetric NAT)
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  // Additional free TURN (relay.metered.ca)
-  {
-    urls: 'turn:a.relay.metered.ca:80',
-    username: 'e8dd65b92af416a2b710dc24',
-    credential: '1laBSqnG6QRKfk+1',
-  },
-  {
-    urls: 'turn:a.relay.metered.ca:443',
-    username: 'e8dd65b92af416a2b710dc24',
-    credential: '1laBSqnG6QRKfk+1',
-  },
-  {
-    urls: 'turn:a.relay.metered.ca:443?transport=tcp',
-    username: 'e8dd65b92af416a2b710dc24',
-    credential: '1laBSqnG6QRKfk+1',
-  },
-];
 
 export default function CandidateJoin() {
   const { token } = useParams();
@@ -73,6 +36,10 @@ export default function CandidateJoin() {
   const [screenSharing, setScreenSharing] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [permissionError, setPermissionError] = useState('');
+
+  // ── Agora Hooks ────────────────────────────────────
+  const { joinAsCandidate, publishCamera, publishScreen, unpublishCamera, unpublishScreen, leave: agoraLeave } = useAgora();
+  const { getToken } = useToken();
 
   // Proctoring state
   const [proctoringStats, setProctoringStats] = useState({
@@ -102,8 +69,6 @@ export default function CandidateJoin() {
   const timeIntervalRef = useRef(null);
   const synthRef = useRef(window.speechSynthesis);
   const wsRef = useRef(null);
-  const peerConnectionsRef = useRef({});
-  const pendingICERef = useRef({});  // targetId -> [candidates] — queued ICE before remote desc is set
   const screenStreamRef = useRef(null);
 
   // Vosk STT WebSocket refs
@@ -740,7 +705,6 @@ export default function CandidateJoin() {
       clearInterval(micCheckRef.current);
       if (sttWsRef.current) sttWsRef.current.close();
       wsRef.current?.close();
-      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
     };
   }, []);
 
@@ -911,16 +875,6 @@ export default function CandidateJoin() {
     let heartbeatInterval;
     let alive = true; // tracks whether the effect is still active
 
-    const sendStreamReady = (socket) => {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'stream_ready',
-          has_camera: !!streamRef.current,
-          has_screen: !!screenStreamRef.current,
-        }));
-      }
-    };
-
     const connect = () => {
       if (!alive) return;
       ws = new WebSocket(wsUrl);
@@ -929,15 +883,6 @@ export default function CandidateJoin() {
       ws.onopen = () => {
         console.log('[WS] Connected to interview room, session:', interviewSessionId);
         reconnectAttempts = 0;
-        // Send initial stream status immediately on connect
-        sendStreamReady(ws);
-        // Rapid-fire initial announcements: 0.5s, 1.5s, 3s to guarantee HR gets it
-        setTimeout(() => sendStreamReady(ws), 500);
-        setTimeout(() => sendStreamReady(ws), 1500);
-        setTimeout(() => sendStreamReady(ws), 3000);
-        // Start heartbeat: re-send stream_ready every 5s so HR always has fresh status
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = setInterval(() => sendStreamReady(ws), 5000);
       };
 
       ws.onmessage = (event) => {
@@ -973,28 +918,8 @@ export default function CandidateJoin() {
       clearTimeout(reconnectTimer);
       clearInterval(heartbeatInterval);
       if (wsRef.current) wsRef.current.close();
-      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
-      peerConnectionsRef.current = {};
     };
   }, [phase, interviewSessionId]);
-
-  // Re-notify HR when camera/screen state changes and re-create peer connections
-  // so HR receives updated tracks (e.g., after screen share is restored)
-  useEffect(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'stream_ready',
-        has_camera: cameraOn,
-        has_screen: !!screenStreamRef.current,
-      }));
-      // Re-create offers for all existing HR peer connections so they get updated tracks
-      const existingPeers = Object.keys(peerConnectionsRef.current);
-      existingPeers.forEach((targetId) => {
-        console.log('[Candidate] Re-creating stream offer for HR after stream change:', targetId);
-        createStreamOffer(targetId);
-      });
-    }
-  }, [cameraOn, screenSharing]);
 
   // Re-attach camera stream to video element when entering interview or face_registration phase
   useEffect(() => {
@@ -1007,61 +932,6 @@ export default function CandidateJoin() {
   const handleWSMessage = useCallback(async (data) => {
     console.log('[Candidate WS] Received:', data.type, data.from || '');
     switch (data.type) {
-      case 'request_stream':
-        console.log('[Candidate] HR requesting stream, creating offer for:', data.from);
-        await createStreamOffer(data.from);
-        break;
-      case 'request_stream_status':
-        // HR asked us to re-announce our stream status
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: 'stream_ready',
-            has_camera: !!streamRef.current,
-            has_screen: !!screenStreamRef.current,
-          }));
-        }
-        break;
-      case 'webrtc_answer':
-        {
-          const pc = peerConnectionsRef.current[data.from];
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-            // Flush any ICE candidates that arrived before remote description was set
-            const queued = pendingICERef.current[data.from] || [];
-            pendingICERef.current[data.from] = [];
-            for (const candidate of queued) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(candidate));
-              } catch (err) {
-                console.error('[Candidate ICE] Error adding queued candidate:', err);
-              }
-            }
-          }
-        }
-        break;
-      case 'ice_candidate':
-        {
-          const pc = peerConnectionsRef.current[data.from];
-          if (pc && data.candidate) {
-            // Queue ICE candidates if remote description isn't set yet
-            if (!pc.remoteDescription) {
-              console.log('[Candidate ICE] Queuing candidate (remote desc not set yet) for:', data.from);
-              if (!pendingICERef.current[data.from]) pendingICERef.current[data.from] = [];
-              pendingICERef.current[data.from].push(data.candidate);
-              return;
-            }
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-            } catch (err) {
-              console.error('[Candidate ICE] Error adding candidate:', err);
-            }
-          } else if (data.candidate) {
-            // PC doesn't exist yet — queue it
-            if (!pendingICERef.current[data.from]) pendingICERef.current[data.from] = [];
-            pendingICERef.current[data.from].push(data.candidate);
-          }
-        }
-        break;
       case 'session_ended':
         // HR ended the session — stop everything and show message
         console.log('[Candidate] Session ended by HR');
@@ -1070,143 +940,6 @@ export default function CandidateJoin() {
       default:
         break;
     }
-  }, []);
-
-  const createStreamOffer = useCallback(async (targetId) => {
-    // Close existing connection to this target
-    if (peerConnectionsRef.current[targetId]) {
-      peerConnectionsRef.current[targetId].close();
-      delete peerConnectionsRef.current[targetId];
-    }
-    // Clear any pending ICE candidates from previous connection
-    pendingICERef.current[targetId] = [];
-
-    const pc = new RTCPeerConnection({
-      iceServers: ICE_SERVERS,
-      iceCandidatePoolSize: 4,           // pre-gather relay candidates
-      bundlePolicy: 'max-bundle',        // single transport for all media
-      rtcpMuxPolicy: 'require',          // multiplex RTP/RTCP
-    });
-    peerConnectionsRef.current[targetId] = pc;
-
-    let tracksAdded = 0;
-
-    // Add camera tracks (read refs at call time — they're mutable)
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => {
-        if (track.readyState === 'live') {
-          pc.addTrack(track, streamRef.current);
-          tracksAdded++;
-        }
-      });
-    }
-
-    // Add screen share tracks
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((track) => {
-        if (track.readyState === 'live') {
-          pc.addTrack(track, screenStreamRef.current);
-          tracksAdded++;
-        }
-      });
-    }
-
-    console.log('[Candidate WebRTC] Offer for', targetId, '— tracks:', tracksAdded);
-
-    // If no live tracks available, don't send a useless empty offer.
-    // Instead, close the PC and retry after a delay (streams may not be ready yet).
-    if (tracksAdded === 0) {
-      console.warn('[Candidate WebRTC] No live tracks available for', targetId, '— deferring offer (retry in 1s)');
-      pc.close();
-      delete peerConnectionsRef.current[targetId];
-      // Retry after 1s — streams might be initializing
-      setTimeout(() => {
-        if (streamRef.current || screenStreamRef.current) {
-          console.log('[Candidate WebRTC] Retrying offer for', targetId, 'after tracks became available');
-          createStreamOffer(targetId);
-        } else {
-          console.log('[Candidate WebRTC] Still no tracks for', targetId, '— will retry when streams change');
-        }
-      }, 1000);
-      return;
-    }
-
-    // Trickle ICE — send candidates as they arrive for faster connection
-    pc.onicecandidate = (event) => {
-      if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'ice_candidate',
-          target: targetId,
-          candidate: event.candidate.toJSON(),
-        }));
-      }
-    };
-
-    // Monitor ICE connection state for faster failure detection
-    pc.oniceconnectionstatechange = () => {
-      const state = pc.iceConnectionState;
-      console.log('[Candidate WebRTC] ICE state:', state, 'for', targetId);
-      if (state === 'failed') {
-        // Try ICE restart first — avoids a full offer/answer renegotiation
-        console.log('[Candidate WebRTC] ICE failed for', targetId, '— attempting restart');
-        try {
-          pc.restartIce();
-        } catch (e) {
-          // restartIce failed — close and let HR re-request
-          pc.close();
-          delete peerConnectionsRef.current[targetId];
-        }
-      } else if (state === 'disconnected') {
-        // ICE disconnected — wait 5s before restart (gives time for self-recovery)
-        setTimeout(() => {
-          if (
-            (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') &&
-            peerConnectionsRef.current[targetId] === pc
-          ) {
-            console.log('[Candidate WebRTC] ICE restart for', targetId);
-            try {
-              pc.restartIce();
-            } catch (e) {
-              pc.close();
-              delete peerConnectionsRef.current[targetId];
-            }
-          }
-        }, 5000);
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') {
-        pc.close();
-        delete peerConnectionsRef.current[targetId];
-      }
-    };
-
-    // Handle renegotiation (e.g., when tracks are added/removed later)
-    pc.onnegotiationneeded = async () => {
-      if (peerConnectionsRef.current[targetId] !== pc) return;
-      try {
-        const offer = await pc.createOffer();
-        if (pc.signalingState !== 'stable') return;
-        await pc.setLocalDescription(offer);
-        wsRef.current?.send(JSON.stringify({
-          type: 'webrtc_offer',
-          target: targetId,
-          offer: pc.localDescription.toJSON(),
-        }));
-      } catch (e) {
-        console.error('[Candidate WebRTC] Renegotiation error:', e);
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    wsRef.current?.send(JSON.stringify({
-      type: 'webrtc_offer',
-      target: targetId,
-      offer: pc.localDescription.toJSON(),
-    }));
   }, []);
 
   // ── Start interview ────────────────────────────────
@@ -1349,6 +1082,41 @@ export default function CandidateJoin() {
       setEvaluation(null);
       setAnswer('');
       setCodeText('');
+
+      // ── Join Agora Channel ──
+      try {
+        const channelId = `interview_${res.data.interview_session_id}`;
+        const baseId = generateBaseId(token);
+        const camUid = baseId * 10 + 1;
+        const screenUid = baseId * 10 + 2;
+
+        const [camTokenRes, screenTokenRes] = await Promise.all([
+          getToken(channelId, camUid, 'publisher'),
+          getToken(channelId, screenUid, 'publisher')
+        ]);
+
+        await joinAsCandidate(
+          camTokenRes.appId,
+          channelId,
+          camTokenRes.token,
+          camUid,
+          screenTokenRes.token,
+          screenUid
+        );
+
+        if (streamRef.current) {
+          const videoTrack = streamRef.current.getVideoTracks()[0];
+          const audioTrack = streamRef.current.getAudioTracks()[0];
+          await publishCamera(videoTrack, audioTrack);
+        }
+        if (screenStreamRef.current) {
+          const screenTrack = screenStreamRef.current.getVideoTracks()[0];
+          await publishScreen(screenTrack);
+        }
+      } catch (agoraErr) {
+        console.error('Failed to join Agora:', agoraErr);
+        toast.error('Failed to connect to proctoring network.');
+      }
 
       // ── Face Registration Phase (skip if resuming — already registered) ──
       if (res.data.resumed) {

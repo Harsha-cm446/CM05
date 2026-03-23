@@ -19,6 +19,7 @@ import LiveInterview from './pages/LiveInterview';
 import CandidateJoin from './pages/CandidateJoin';
 import ProfilePage from './pages/ProfilePage';
 import DataCollectionPage from './pages/DataCollectionPage';
+import AgoraMonitorDashboard from './pages/AgoraMonitorDashboard';
 
 function ProtectedRoute({ children, roles }) {
   const { user, loading } = useAuth();
@@ -55,6 +56,7 @@ function AppRoutes() {
         <Route path="/hr/create-session" element={<ProtectedRoute roles={['hr', 'admin']}><CreateSession /></ProtectedRoute>} />
         <Route path="/hr/session/:sessionId" element={<ProtectedRoute roles={['hr', 'admin']}><SessionDetail /></ProtectedRoute>} />
         <Route path="/hr/live/:sessionId" element={<ProtectedRoute roles={['hr', 'admin']}><LiveInterview /></ProtectedRoute>} />
+        <Route path="/hr/agora-monitor/:sessionId" element={<ProtectedRoute roles={['hr', 'admin']}><AgoraMonitorDashboard /></ProtectedRoute>} />
 
         {/* Candidate interview join (public via token) */}
         <Route path="/interview/:token" element={<CandidateJoin />} />
