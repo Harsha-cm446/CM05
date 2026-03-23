@@ -51,17 +51,21 @@ const ICE_SERVERS = [
 
 // ── Gallery Tile: auto-attaches stream to video ─────────────────────
 const GalleryVideoTile = React.memo(function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
-  const videoCallbackRef = useCallback((node) => {
-    if (!node || !stream) return;
-    if (node.srcObject?.id === stream.id) return;
-    node.srcObject = stream;
-    node.play().catch(() => {});
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+      }
+      videoRef.current.play().catch(() => {});
+    }
   }, [stream]);
 
   return (
     <div className="absolute inset-0">
       {stream ? (
-        <video ref={videoCallbackRef} autoPlay playsInline muted className={`w-full h-full ${type === 'screen' ? 'object-contain' : 'object-cover'}`} />
+        <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full ${type === 'screen' ? 'object-contain' : 'object-cover'}`} />
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center text-gray-500 bg-gray-900">
           {type === 'screen' ? <Monitor size={20} className="mb-1 text-gray-600" /> : <VideoOff size={20} className="mb-1 text-gray-600" />}
