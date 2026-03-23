@@ -144,7 +144,7 @@ export default function LiveInterview() {
   const galleryICEQueueRef = useRef({}); // token -> [candidates] — queued ICE before PC exists
   const [galleryStreams, setGalleryStreams] = useState({}); // token -> { camera: MediaStream|null, screen: MediaStream|null, name }
   const galleryVideoRefs = useRef({}); // token -> video element ref
-  const [enlargedCandidate, setEnlargedCandidate] = useState(null); // token of enlarged candidate
+  const [enlargedFeed, setEnlargedFeed] = useState(null); // { token, type: 'camera'|'screen' } | null
   const [isFullscreen, setIsFullscreen] = useState(false);
   const enlargedModalRef = useRef(null);
 
@@ -1766,13 +1766,29 @@ export default function LiveInterview() {
             hasScreen: streamableCandidates[c.candidate_token]?.has_screen,
           }));
 
-        const totalPages = Math.max(1, Math.ceil(inProgressCandidates.length / GALLERY_PAGE_SIZE));
+        // Build flat list of all individual feed tiles
+        const allTiles = [];
+        inProgressCandidates.forEach(c => {
+          if (c.hasCamera || galleryStreams[c.token]?.camera) {
+            allTiles.push({ token: c.token, name: c.name, type: 'camera', stream: galleryStreams[c.token]?.camera || null });
+          }
+          if (c.hasScreen || galleryStreams[c.token]?.screen) {
+            allTiles.push({ token: c.token, name: c.name, type: 'screen', stream: galleryStreams[c.token]?.screen || null });
+          }
+          // If candidate has neither flag but has a gallery entry, show camera placeholder
+          if (!c.hasCamera && !c.hasScreen && !galleryStreams[c.token]?.camera && !galleryStreams[c.token]?.screen) {
+            allTiles.push({ token: c.token, name: c.name, type: 'camera', stream: null });
+          }
+        });
+
+        const totalPages = Math.max(1, Math.ceil(allTiles.length / (GALLERY_PAGE_SIZE * 2))); // 2 tiles per candidate previously
         const currentPage = Math.min(galleryPage, totalPages - 1);
-        const pageItems = inProgressCandidates.slice(currentPage * GALLERY_PAGE_SIZE, (currentPage + 1) * GALLERY_PAGE_SIZE);
+        const tilesPerPage = GALLERY_PAGE_SIZE * 2;
+        const pageTiles = allTiles.slice(currentPage * tilesPerPage, (currentPage + 1) * tilesPerPage);
 
         return (
           <div>
-            {inProgressCandidates.length === 0 ? (
+            {allTiles.length === 0 ? (
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
                 <VideoOff size={48} className="mx-auto text-gray-300 mb-4" />
                 <h2 className="text-lg font-semibold text-gray-700 mb-2">No live streams available</h2>
@@ -1780,54 +1796,51 @@ export default function LiveInterview() {
               </div>
             ) : (
               <>
-                {/* Gallery Grid — each candidate gets a card with camera + screen */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {pageItems.map(c => (
+                {/* Flat gallery grid — each feed is its own tile */}
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                  {pageTiles.map(tile => (
                     <div
-                      key={c.token}
-                      className="bg-gray-800 rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-primary-400 transition-all"
-                      onClick={() => setEnlargedCandidate(c.token)}
+                      key={`${tile.token}-${tile.type}`}
+                      className="bg-gray-800 rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-primary-400 transition-all hover:scale-[1.02]"
+                      onClick={() => setEnlargedFeed({ token: tile.token, type: tile.type })}
                     >
-                      {/* Candidate name header */}
-                      <div className="flex items-center justify-between px-3 py-2 bg-gray-900">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-6 h-6 rounded-full bg-primary-600 flex items-center justify-center text-white text-xs font-bold">
-                            {c.name?.[0]?.toUpperCase() || '?'}
+                      {/* Video area */}
+                      <div className="relative bg-black" style={{ aspectRatio: '16/10' }}>
+                        <GalleryVideoTile
+                          token={tile.token}
+                          stream={tile.stream}
+                          candidateName={tile.name}
+                          type={tile.type}
+                          onEnlarge={() => setEnlargedFeed({ token: tile.token, type: tile.type })}
+                        />
+                        {/* Enlarge icon on hover */}
+                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition">
+                          <div className="p-1.5 bg-black/60 rounded-lg">
+                            <Maximize2 size={14} className="text-white" />
                           </div>
-                          <span className="text-white text-sm font-medium truncate">{c.name}</span>
                         </div>
-                        <div className="flex items-center space-x-2">
-                          {galleryStreams[c.token]?.camera && (
+                        {/* LIVE badge */}
+                        {tile.stream && (
+                          <div className="absolute top-2 right-2 group-hover:top-auto group-hover:bottom-8 group-hover:right-2 transition-all">
                             <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1">
                               <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
                               <span>LIVE</span>
                             </span>
-                          )}
-                          <Maximize2 size={12} className="text-gray-400 opacity-0 group-hover:opacity-100 transition" />
-                        </div>
+                          </div>
+                        )}
                       </div>
-                      {/* Camera + Screen side by side */}
-                      <div className="grid grid-cols-2 gap-px bg-gray-700">
-                        {/* Camera feed */}
-                        <div className="relative bg-black" style={{ aspectRatio: '4/3' }}>
-                          <GalleryVideoTile
-                            token={c.token}
-                            stream={galleryStreams[c.token]?.camera}
-                            candidateName="Camera"
-                            type="camera"
-                            onEnlarge={() => setEnlargedCandidate(c.token)}
-                          />
+                      {/* Footer: candidate name + type */}
+                      <div className="flex items-center justify-between px-3 py-2 bg-gray-900">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <div className="w-5 h-5 rounded-full bg-primary-600 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
+                            {tile.name?.[0]?.toUpperCase() || '?'}
+                          </div>
+                          <span className="text-white text-xs font-medium truncate">{tile.name}</span>
                         </div>
-                        {/* Screen share feed */}
-                        <div className="relative bg-black" style={{ aspectRatio: '4/3' }}>
-                          <GalleryVideoTile
-                            token={c.token}
-                            stream={galleryStreams[c.token]?.screen}
-                            candidateName="Screen"
-                            type="screen"
-                            onEnlarge={() => setEnlargedCandidate(c.token)}
-                          />
-                        </div>
+                        <span className="flex items-center space-x-1 text-gray-400 text-[10px] flex-shrink-0 ml-2">
+                          {tile.type === 'screen' ? <Monitor size={10} /> : <Video size={10} />}
+                          <span className="capitalize">{tile.type}</span>
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -1837,10 +1850,7 @@ export default function LiveInterview() {
                 {totalPages > 1 && (
                   <div className="flex items-center justify-center space-x-4 mt-6">
                     <button
-                      onClick={() => {
-                        const newPage = currentPage - 1;
-                        setGalleryPage(newPage);
-                      }}
+                      onClick={() => setGalleryPage(currentPage - 1)}
                       disabled={currentPage === 0}
                       className="flex items-center space-x-1 px-4 py-2 rounded-lg bg-white border border-gray-200 text-sm font-medium hover:bg-gray-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
                     >
@@ -1851,9 +1861,7 @@ export default function LiveInterview() {
                       {Array.from({ length: totalPages }, (_, i) => (
                         <button
                           key={i}
-                          onClick={() => {
-                            setGalleryPage(i);
-                          }}
+                          onClick={() => setGalleryPage(i)}
                           className={`w-8 h-8 rounded-lg text-sm font-semibold transition ${
                             i === currentPage
                               ? 'bg-primary-600 text-white shadow-sm'
@@ -1865,10 +1873,7 @@ export default function LiveInterview() {
                       ))}
                     </div>
                     <button
-                      onClick={() => {
-                        const newPage = currentPage + 1;
-                        setGalleryPage(newPage);
-                      }}
+                      onClick={() => setGalleryPage(currentPage + 1)}
                       disabled={currentPage >= totalPages - 1}
                       className="flex items-center space-x-1 px-4 py-2 rounded-lg bg-white border border-gray-200 text-sm font-medium hover:bg-gray-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
                     >
@@ -1878,32 +1883,68 @@ export default function LiveInterview() {
                   </div>
                 )}
 
-                {/* Candidate count info */}
+                {/* Tile count info */}
                 <div className="text-center mt-3 text-xs text-gray-400">
-                  Showing {currentPage * GALLERY_PAGE_SIZE + 1}–{Math.min((currentPage + 1) * GALLERY_PAGE_SIZE, inProgressCandidates.length)} of {inProgressCandidates.length} live candidates
+                  Showing {pageTiles.length} feed{pageTiles.length !== 1 ? 's' : ''} from {inProgressCandidates.length} live candidate{inProgressCandidates.length !== 1 ? 's' : ''}
                 </div>
               </>
             )}
 
-            {/* ── Enlarged Candidate Modal ──────────────── */}
-            {enlargedCandidate && galleryStreams[enlargedCandidate] && (() => {
-              const gs = galleryStreams[enlargedCandidate];
-              const candidateName = gs.name || enlargedCandidate;
+            {/* ── Enlarged Feed Modal ──────────────── */}
+            {enlargedFeed && (() => {
+              const gs = galleryStreams[enlargedFeed.token];
+              const feedStream = gs?.[enlargedFeed.type] || null;
+              const candidateInfo = inProgressCandidates.find(c => c.token === enlargedFeed.token);
+              const candidateName = candidateInfo?.name || gs?.name || enlargedFeed.token;
+              const feedLabel = enlargedFeed.type === 'screen' ? 'Screen' : 'Camera';
+              const feedIcon = enlargedFeed.type === 'screen' ? <Monitor size={14} /> : <Video size={14} />;
+              const objectFit = enlargedFeed.type === 'screen' ? 'object-contain' : 'object-cover';
+
+              // Navigation: find current index in allTiles and enable prev/next
+              const currentIdx = allTiles.findIndex(t => t.token === enlargedFeed.token && t.type === enlargedFeed.type);
+              const hasPrev = currentIdx > 0;
+              const hasNext = currentIdx < allTiles.length - 1;
+
+              const goToPrev = (e) => {
+                e.stopPropagation();
+                if (hasPrev) {
+                  const prev = allTiles[currentIdx - 1];
+                  setEnlargedFeed({ token: prev.token, type: prev.type });
+                }
+              };
+              const goToNext = (e) => {
+                e.stopPropagation();
+                if (hasNext) {
+                  const next = allTiles[currentIdx + 1];
+                  setEnlargedFeed({ token: next.token, type: next.type });
+                }
+              };
+
               return (
                 <div
                   ref={enlargedModalRef}
                   className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-                  onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedCandidate(null); }}
+                  onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedFeed(null); }}
                 >
-                  <div className={`relative w-full mx-4 ${isFullscreen ? 'max-w-full h-full flex flex-col justify-center' : 'max-w-5xl'}`} onClick={e => e.stopPropagation()}>
+                  <div className={`relative w-full mx-4 ${isFullscreen ? 'max-w-full h-full flex flex-col justify-center' : 'max-w-4xl'}`} onClick={e => e.stopPropagation()}>
                     {/* Toolbar */}
                     <div className={`flex items-center justify-between ${isFullscreen ? 'px-6 py-3' : 'mb-4'}`}>
-                      <div className={isFullscreen ? '' : 'flex-1 text-center'}>
-                        <h3 className="text-white text-lg font-bold">{candidateName}</h3>
-                        <span className="text-gray-300 text-sm">Live Interview Feed</span>
+                      <div className={isFullscreen ? '' : 'flex-1'}>
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white text-sm font-bold">
+                            {candidateName?.[0]?.toUpperCase() || '?'}
+                          </div>
+                          <div>
+                            <h3 className="text-white text-lg font-bold">{candidateName}</h3>
+                            <span className="text-gray-300 text-sm flex items-center space-x-1">
+                              {feedIcon}
+                              <span>{feedLabel} Feed</span>
+                              {currentIdx >= 0 && <span className="text-gray-500 ml-2">({currentIdx + 1} / {allTiles.length})</span>}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                       <div className="flex items-center space-x-2">
-                        {/* Fullscreen toggle */}
                         <button
                           onClick={toggleFullscreen}
                           className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition"
@@ -1911,9 +1952,8 @@ export default function LiveInterview() {
                         >
                           {isFullscreen ? <Minimize2 size={20} className="text-white" /> : <Maximize2 size={20} className="text-white" />}
                         </button>
-                        {/* Close button */}
                         <button
-                          onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedCandidate(null); }}
+                          onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedFeed(null); }}
                           className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition"
                         >
                           <X size={20} className="text-white" />
@@ -1921,14 +1961,29 @@ export default function LiveInterview() {
                       </div>
                     </div>
 
-                    {/* Camera + Screen side by side */}
-                    <div className={`grid md:grid-cols-2 gap-2 ${isFullscreen ? 'flex-1 px-6 pb-6' : ''}`}>
+                    {/* Single enlarged video */}
+                    <div className={`relative ${isFullscreen ? 'flex-1 px-6 pb-6' : ''}`}>
                       <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: isFullscreen ? undefined : '16/9', height: isFullscreen ? '100%' : undefined }}>
-                        <EnlargedVideo stream={gs.camera} label="Camera" icon={<Video size={14} />} objectFit="object-cover" />
+                        <EnlargedVideo stream={feedStream} label={feedLabel} icon={feedIcon} objectFit={objectFit} />
                       </div>
-                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: isFullscreen ? undefined : '16/9', height: isFullscreen ? '100%' : undefined }}>
-                        <EnlargedVideo stream={gs.screen} label="Screen" icon={<Monitor size={14} />} objectFit="object-contain" />
-                      </div>
+
+                      {/* Prev / Next arrows */}
+                      {hasPrev && (
+                        <button
+                          onClick={goToPrev}
+                          className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/50 hover:bg-black/70 rounded-full transition z-10"
+                        >
+                          <ChevronLeft size={24} className="text-white" />
+                        </button>
+                      )}
+                      {hasNext && (
+                        <button
+                          onClick={goToNext}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/50 hover:bg-black/70 rounded-full transition z-10"
+                        >
+                          <ChevronRight size={24} className="text-white" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
