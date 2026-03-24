@@ -27,16 +27,27 @@ import FocusView from '../components/agora/FocusView';
 // HR observer UID — fixed, high range to avoid collision with candidates
 const HR_UID = 999;
 
-export default function AgoraMonitorDashboard() {
-  const { sessionId } = useParams();
+export default function AgoraMonitorDashboard({ sessionId: propSessionId, embedded = false, focusId = null }) {
+  const params = useParams();
+  const sessionId = propSessionId || params.sessionId;
 
   // ── Agora hooks ────────────────────────────────────
   const { candidates, connectionState, logs, joinAsHR, leave } = useAgora();
   const { getToken, loading: tokenLoading, error: tokenError } = useToken();
 
   // ── UI State ───────────────────────────────────────
-  const [viewMode, setViewMode] = useState('gallery'); // 'gallery' | 'focus'
-  const [selectedCandidate, setSelectedCandidate] = useState(null);
+  const [viewMode, setViewMode] = useState(focusId ? 'focus' : 'gallery'); // 'gallery' | 'focus'
+  const [selectedCandidate, setSelectedCandidate] = useState(focusId || null);
+
+  useEffect(() => {
+    if (focusId) {
+      setSelectedCandidate(focusId);
+      setViewMode('focus');
+    } else {
+      setSelectedCandidate(null);
+      setViewMode('gallery');
+    }
+  }, [focusId]);
   const [showLogs, setShowLogs] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joined, setJoined] = useState(false);
@@ -69,6 +80,11 @@ export default function AgoraMonitorDashboard() {
     try {
       const channel = `interview_${sessionId}`;
       const tokenData = await getToken(channel, HR_UID, 'subscriber');
+      
+      if (!tokenData.appId || tokenData.appId.trim() === '') {
+        throw new Error('AGORA_APP_ID is missing from the server configuration.');
+      }
+
       await joinAsHR(tokenData.appId, channel, tokenData.token, HR_UID);
       setJoined(true);
       toast.success('Connected to monitoring channel');
@@ -131,8 +147,9 @@ export default function AgoraMonitorDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col">
-      {/* ── Header ─────────────────────────────────────── */}
+    <div className={`${embedded ? 'h-full w-full relative' : 'min-h-screen bg-gray-950 text-white'} flex flex-col`}>
+      {/* ── Header ──────────────────────────────────────── */}
+      {!embedded && (
       <header className="bg-gray-900/80 backdrop-blur-xl border-b border-white/5 px-4 py-3">
         <div className="flex items-center justify-between">
           {/* Left */}
@@ -225,8 +242,7 @@ export default function AgoraMonitorDashboard() {
             </button>
           </div>
         </div>
-      </header>
-
+      </header>      )}
       {/* ── Error Banner ───────────────────────────────── */}
       {(error || tokenError) && (
         <div className="mx-4 mt-3 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20

@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { candidateAPI, interviewAPI, WS_BASE } from '../services/api';
 import toast from 'react-hot-toast';
+import AgoraMonitorDashboard from './AgoraMonitorDashboard';
+import { generateBaseId } from '../hooks/useAgora';
 import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
@@ -21,6 +23,7 @@ export default function LiveInterview() {
   const [candidateReport, setCandidateReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('candidates'); // 'candidates' | 'duplicates' | 'gallery'
+  const [focusId, setFocusId] = useState(null);
   const [duplicateQuestions, setDuplicateQuestions] = useState(null);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
@@ -371,15 +374,13 @@ export default function LiveInterview() {
           </div>
         </div>
         <div className="flex items-center space-x-3">
-          <Link
-            to={`/hr/agora-monitor/${sessionId}`}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            onClick={() => setActiveTab('gallery')}
             className="flex items-center space-x-2 px-4 py-2 bg-green-50 hover:bg-green-100 text-green-700 rounded-lg text-sm font-semibold transition"
           >
             <Video size={16} />
             <span>Open AI Live Monitor</span>
-          </Link>
+          </button>
           <button
             onClick={() => loadData(true)}
             disabled={refreshing}
@@ -501,6 +502,18 @@ export default function LiveInterview() {
           <span className="flex items-center gap-2"><Users size={15} /> Candidates ({candidates.length})</span>
         </button>
         <button
+          onClick={() => setActiveTab('gallery')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'gallery'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+            }`}
+        >
+          <span className="flex items-center gap-2">
+            <LayoutGrid size={15} />
+            Live Gallery
+          </span>
+        </button>
+        <button
           onClick={() => setActiveTab('duplicates')}
           className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'duplicates'
               ? 'bg-white text-gray-900 shadow-sm'
@@ -518,7 +531,12 @@ export default function LiveInterview() {
           </span>
         </button>
       </div>
-
+      {/* ── Gallery Tab ─────────────────────────────── */}
+      {activeTab === 'gallery' && (
+        <div className="bg-gray-900 rounded-2xl shadow-sm border border-gray-800 overflow-hidden h-[80vh]">
+          <AgoraMonitorDashboard sessionId={sessionId} embedded={true} focusId={focusId} />
+        </div>
+      )}
       {/* ── Duplicate Questions Tab ─────────────── */}
       {activeTab === 'duplicates' && (
         <div className="space-y-4">
@@ -683,15 +701,16 @@ export default function LiveInterview() {
 
                     {/* Watch Live button */}
                     {c.status === 'in_progress' && (
-                      <Link
-                        to={`/hr/agora-monitor/${sessionId}?focus=${c.candidate_token}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => {
+                          setFocusId(generateBaseId(c.candidate_token));
+                          setActiveTab('gallery');
+                        }}
                         className="flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-medium transition bg-green-50 text-green-700 hover:bg-green-100"
                       >
                         <Video size={14} />
                         <span>Watch Live</span>
-                      </Link>
+                      </button>
                     )}
                   </div>
                 </div>

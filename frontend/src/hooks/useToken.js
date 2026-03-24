@@ -32,7 +32,7 @@ export default function useToken() {
       const data = res.data;
       cache.current[key] = {
         token: data.token,
-        appId: data.appId,
+        appId: data.appId?.trim(),
         uid: data.uid,
         channel: data.channel,
         expiresAt: data.expiresAt,
