@@ -60,20 +60,20 @@ class Settings(BaseSettings):
     # e.g. http://192.168.1.100:5173 or https://abc123.ngrok.io
     PUBLIC_URL: str = ""
 
-    # Agora RTC (real-time video monitoring)
-    AGORA_APP_ID: str = ""
-    AGORA_APP_CERTIFICATE: str = ""
+    # LiveKit Cloud (real-time video monitoring)
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
 
     class Config:
         env_file = str(_ENV_FILE)
 
 settings = Settings()
 
-# Strip any accidental whitespace/quotes from Agora credentials
-if settings.AGORA_APP_ID:
-    settings.AGORA_APP_ID = settings.AGORA_APP_ID.strip().strip('"').strip("'")
-if settings.AGORA_APP_CERTIFICATE:
-    settings.AGORA_APP_CERTIFICATE = settings.AGORA_APP_CERTIFICATE.strip().strip('"').strip("'")
+# Strip any accidental whitespace/quotes from LiveKit credentials
+if settings.LIVEKIT_API_KEY:
+    settings.LIVEKIT_API_KEY = settings.LIVEKIT_API_KEY.strip().strip('"').strip("'")
+if settings.LIVEKIT_API_SECRET:
+    settings.LIVEKIT_API_SECRET = settings.LIVEKIT_API_SECRET.strip().strip('"').strip("'")
 
 # Startup diagnostic — print only if Gemini key is missing
 if not settings.GEMINI_API_KEY:

@@ -2,8 +2,8 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { candidateAPI, interviewAPI, WS_BASE } from '../services/api';
 import toast from 'react-hot-toast';
-import AgoraMonitorDashboard from './AgoraMonitorDashboard';
-import { generateBaseId } from '../hooks/useAgora';
+import LiveKitMonitorDashboard from './LiveKitMonitorDashboard';
+
 import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
@@ -534,7 +534,7 @@ export default function LiveInterview() {
       {/* ── Gallery Tab ─────────────────────────────── */}
       {activeTab === 'gallery' && (
         <div className="bg-gray-900 rounded-2xl shadow-sm border border-gray-800 overflow-hidden h-[80vh]">
-          <AgoraMonitorDashboard sessionId={sessionId} embedded={true} focusId={focusId} />
+          <LiveKitMonitorDashboard sessionId={sessionId} embedded={true} focusId={focusId} />
         </div>
       )}
       {/* ── Duplicate Questions Tab ─────────────── */}

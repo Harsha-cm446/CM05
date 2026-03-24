@@ -109,15 +109,15 @@ button:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-/* ── Agora Monitoring Dashboard ──────────────── */
+/* ── livekit Monitoring Dashboard ──────────────── */
 
 /* Candidate card glassmorphism */
-.agora-candidate-card {
+.livekit-candidate-card {
   backdrop-filter: blur(8px);
   background: rgba(17, 24, 39, 0.7);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.agora-candidate-card:hover {
+.livekit-candidate-card:hover {
   box-shadow:
     0 0 0 1px rgba(102, 126, 234, 0.3),
     0 8px 32px rgba(0, 0, 0, 0.4);
@@ -141,11 +141,11 @@ button:active:not(:disabled) {
 }
 
 /* Video container aspect ratio enforcement */
-.agora-video-container {
+.livekit-video-container {
   position: relative;
   overflow: hidden;
 }
-.agora-video-container video {
+.livekit-video-container video {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -153,13 +153,13 @@ button:active:not(:disabled) {
 }
 
 /* Dark scrollbar for log panel */
-.agora-logs::-webkit-scrollbar {
+.livekit-logs::-webkit-scrollbar {
   width: 4px;
 }
-.agora-logs::-webkit-scrollbar-track {
+.livekit-logs::-webkit-scrollbar-track {
   background: transparent;
 }
-.agora-logs::-webkit-scrollbar-thumb {
+.livekit-logs::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 2px;
 }

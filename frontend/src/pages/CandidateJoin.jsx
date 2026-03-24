@@ -8,7 +8,7 @@ import {
   Monitor, Shield, UserX, MonitorX, Eye, LogOut, Maximize2, Minimize2,
 } from 'lucide-react';
 import useToken from '../hooks/useToken';
-import useAgora, { generateBaseId } from '../hooks/useAgora';
+import useLiveKit from '../hooks/useLiveKit';
 
 
 export default function CandidateJoin() {
@@ -37,8 +37,8 @@ export default function CandidateJoin() {
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [permissionError, setPermissionError] = useState('');
 
-  // ── Agora Hooks ────────────────────────────────────
-  const { joinAsCandidate, publishCamera, publishScreen, unpublishCamera, unpublishScreen, leave: agoraLeave } = useAgora();
+  // ── LiveKit Hooks ────────────────────────────────────
+  const { joinAsCandidate, publishCamera, publishScreen, unpublishCamera, unpublishScreen, leave: livekitLeave } = useLiveKit();
   const { getToken } = useToken();
 
   // Proctoring state
@@ -1083,25 +1083,15 @@ export default function CandidateJoin() {
       setAnswer('');
       setCodeText('');
 
-      // ── Join Agora Channel ──
-      try {
-        const channelId = `interview_${res.data.interview_session_id}`;
-        const baseId = generateBaseId(token);
-        const camUid = baseId * 10 + 1;
-        const screenUid = baseId * 10 + 2;
+// ── Join LiveKit Room ──
+        try {
+          const roomId = `${res.data.interview_session_id}`;
+          const userId = `candidate-${token.substring(0, 8)}`; // Create a unique user ID
 
-        const [camTokenRes, screenTokenRes] = await Promise.all([
-          getToken(channelId, camUid, 'publisher'),
-          getToken(channelId, screenUid, 'publisher')
-        ]);
+          const tokenRes = await getToken(roomId, userId);
 
-        await joinAsCandidate(
-          camTokenRes.appId,
-          channelId,
-          camTokenRes.token,
-          camUid,
-          screenTokenRes.token,
-          screenUid
+          await joinAsCandidate(
+            tokenRes.token
         );
 
         if (streamRef.current) {
@@ -1113,8 +1103,8 @@ export default function CandidateJoin() {
           const screenTrack = screenStreamRef.current.getVideoTracks()[0];
           await publishScreen(screenTrack);
         }
-      } catch (agoraErr) {
-        console.error('Failed to join Agora:', agoraErr);
+} catch (livekitErr) {
+          console.error('Failed to join LiveKit:', livekitErr);
         toast.error('Failed to connect to proctoring network.');
       }
 

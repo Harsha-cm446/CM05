@@ -46,6 +46,7 @@ jobs:
           docker build \
             --build-arg VITE_API_URL=https://${{ secrets.BACKEND_FQDN }}/api \
             --build-arg VITE_WS_URL=wss://${{ secrets.BACKEND_FQDN }} \
+            --build-arg VITE_LIVEKIT_URL=${{ secrets.LIVEKIT_URL }} \
             -t $IMAGE_TAG \
             -t $IMAGE_LATEST \
             ./frontend
@@ -62,4 +63,5 @@ jobs:
             --image ${{ env.ACR_NAME }}.azurecr.io/ai-interview-frontend:${{ github.sha }} \
             --set-env-vars \
               VITE_API_URL="https://${{ secrets.BACKEND_FQDN }}/api" \
-              VITE_WS_URL="wss://${{ secrets.BACKEND_FQDN }}"
+              VITE_WS_URL="wss://${{ secrets.BACKEND_FQDN }}" \
+              VITE_LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"

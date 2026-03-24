@@ -11,8 +11,11 @@ COPY . .
 # Build-time env vars (injected by GitHub Actions / Azure)
 ARG VITE_API_URL
 ARG VITE_WS_URL
+ARG VITE_LIVEKIT_URL
+
 ENV VITE_API_URL=${VITE_API_URL}
 ENV VITE_WS_URL=${VITE_WS_URL}
+ENV VITE_LIVEKIT_URL=${VITE_LIVEKIT_URL}
 
 RUN npm run build
 

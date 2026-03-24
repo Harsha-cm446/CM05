@@ -91,12 +91,8 @@ jobs:
               SMTP_USER="${{ secrets.SMTP_USER }}" \
               SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
               EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
-              AGORA_APP_ID="${{ secrets.AGORA_APP_ID }}" \
-              AGORA_APP_CERTIFICATE="${{ secrets.AGORA_APP_CERTIFICATE }}"
-          
-          # Set Gemini fallback keys and models separately to avoid comma-parsing issues
-          az containerapp update \
-            --name ${{ env.BACKEND_APP_NAME }} \
+                LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}" \
+                LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --set-env-vars \
               "GEMINI_FALLBACK_API_KEYS=${{ secrets.GEMINI_FALLBACK_API_KEYS }}" \
