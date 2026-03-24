@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import {
   LiveKitRoom,
   useParticipants,
+  useTracks,
   VideoTrack,
   AudioTrack,
-  RoomAudioRenderer,
   ParticipantName
 } from '@livekit/components-react';
 import '@livekit/components-styles/index.css';
@@ -92,6 +92,11 @@ function DashboardContent({ focusId }) {
   const candidates = allParticipants.filter(p => !p.isLocal); // Exclude the HR monitor itself
   const [selectedCandidateId, setSelectedCandidateId] = useState(focusId || null);
 
+  // Get all track references for all participants in the room
+  const cameraTracks = useTracks([{ source: Track.Source.Camera, withPlaceholder: true }]);
+  const screenTracks = useTracks([{ source: Track.Source.ScreenShare, withPlaceholder: true }]);
+  const micTracks = useTracks([{ source: Track.Source.Microphone, withPlaceholder: true }]);
+
   if (candidates.length === 0) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
@@ -104,6 +109,10 @@ function DashboardContent({ focusId }) {
   // If a candidate is selected, show them in full view
   const selectedCandidate = candidates.find(c => c.identity === selectedCandidateId);
   if (selectedCandidate) {
+    const camRef = cameraTracks.find(t => t.participant.identity === selectedCandidateId);
+    const screenRef = screenTracks.find(t => t.participant.identity === selectedCandidateId);
+    const micRef = micTracks.find(t => t.participant.identity === selectedCandidateId);
+
     return (
       <div className="w-full h-full flex flex-col">
         <div className="flex justify-between items-center mb-4">
@@ -120,18 +129,26 @@ function DashboardContent({ focusId }) {
         </div>
         
         {/* Play audio only for the selected candidate */}
-        <AudioTrack participant={selectedCandidate} source={Track.Source.Microphone} />
+        {micRef && <AudioTrack trackRef={micRef} />}
 
         <div className="flex-1 min-h-0 flex gap-4">
           {/* Main Screen Share Area */}
-          <div className="flex-1 bg-gray-900 rounded-lg overflow-hidden border border-gray-700 relative">
-            <VideoTrack participant={selectedCandidate} source={Track.Source.ScreenShare} className="w-full h-full object-contain bg-black" />
+          <div className="flex-1 bg-gray-900 rounded-lg overflow-hidden border border-gray-700 relative flex items-center justify-center">
+            {screenRef ? (
+              <VideoTrack trackRef={screenRef} className="w-full h-full object-contain bg-black" />
+            ) : (
+              <div className="text-gray-500">No screen share available</div>
+            )}
             <div className="absolute top-2 left-2 bg-black/60 px-2 py-1 rounded text-xs text-white">Screen Share</div>
           </div>
           
           {/* Side Camera Feed */}
-          <div className="w-1/4 max-w-sm bg-gray-900 rounded-lg overflow-hidden border border-gray-700 relative flex flex-col">
-            <VideoTrack participant={selectedCandidate} source={Track.Source.Camera} className="w-full h-full object-cover bg-black" />
+          <div className="w-1/4 max-w-sm bg-gray-900 rounded-lg overflow-hidden border border-gray-700 relative flex flex-col items-center justify-center">
+            {camRef ? (
+              <VideoTrack trackRef={camRef} className="w-full h-full object-cover bg-black" />
+            ) : (
+              <div className="text-gray-500">No camera available</div>
+            )}
             <div className="absolute top-2 left-2 bg-black/60 px-2 py-1 rounded text-xs text-white">Camera</div>
           </div>
         </div>
@@ -142,38 +159,52 @@ function DashboardContent({ focusId }) {
   // Otherwise, show all candidates in a grid style
   return (
     <div className="w-full h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto">
-      {candidates.map(participant => (
-        <div 
-          key={participant.identity}
-          className="col-span-1 bg-gray-800 rounded-xl overflow-hidden border border-gray-700 flex flex-col cursor-pointer hover:border-indigo-500 transition-colors group"
-          onClick={() => setSelectedCandidateId(participant.identity)}
-        >
-          {/* Card Header */}
-          <div className="p-3 bg-gray-900 flex justify-between items-center border-b border-gray-700">
-            <div>
-              <div className="font-semibold text-white truncate max-w-[200px]" title={participant.name || participant.identity}>
-                {participant.name || participant.identity}
-              </div>
-              <div className="text-xs text-gray-400 truncate max-w-[200px]" title={participant.identity}>
-                {participant.identity}
-              </div>
-            </div>
-            <Maximize2 className="w-4 h-4 text-gray-500 group-hover:text-indigo-400" />
-          </div>
+      {candidates.map(participant => {
+        const id = participant.identity;
+        const camRef = cameraTracks.find(t => t.participant.identity === id);
+        const screenRef = screenTracks.find(t => t.participant.identity === id);
 
-          {/* Card Media (No Audio Rendered Here) */}
-          <div className="flex-1 p-2 gap-2 flex flex-col aspect-video relative bg-black">
-            <div className="flex-1 relative rounded overflow-hidden">
-               <VideoTrack participant={participant} source={Track.Source.ScreenShare} className="w-full h-full object-contain bg-gray-900" />
-               <div className="absolute top-1 left-1 bg-black/50 text-[10px] text-white px-1 rounded">Screen</div>
+        return (
+          <div 
+            key={id}
+            className="col-span-1 bg-gray-800 rounded-xl overflow-hidden border border-gray-700 flex flex-col cursor-pointer hover:border-indigo-500 transition-colors group"
+            onClick={() => setSelectedCandidateId(id)}
+          >
+            {/* Card Header */}
+            <div className="p-3 bg-gray-900 flex justify-between items-center border-b border-gray-700">
+              <div>
+                <div className="font-semibold text-white truncate max-w-[200px]" title={participant.name || id}>
+                  {participant.name || id}
+                </div>
+                <div className="text-xs text-gray-400 truncate max-w-[200px]" title={id}>
+                  {id}
+                </div>
+              </div>
+              <Maximize2 className="w-4 h-4 text-gray-500 group-hover:text-indigo-400" />
             </div>
-            <div className="absolute bottom-2 right-2 w-1/3 aspect-video rounded border border-gray-600 overflow-hidden shadow-lg z-10">
-               <VideoTrack participant={participant} source={Track.Source.Camera} className="w-full h-full object-cover bg-gray-800" />
-               <div className="absolute bottom-1 left-1 bg-black/50 text-[10px] text-white px-1 rounded">Cam</div>
+
+            {/* Card Media (No Audio Rendered Here) */}
+            <div className="flex-1 p-2 gap-2 flex flex-col aspect-video relative bg-black">
+              <div className="flex-1 relative rounded overflow-hidden flex items-center justify-center bg-gray-900">
+                 {screenRef ? (
+                   <VideoTrack trackRef={screenRef} className="w-full h-full object-contain bg-gray-900" />
+                 ) : (
+                   <span className="text-gray-600 text-xs">No Screen Share</span>
+                 )}
+                 <div className="absolute top-1 left-1 bg-black/50 text-[10px] text-white px-1 rounded">Screen</div>
+              </div>
+              <div className="absolute bottom-2 right-2 w-1/3 aspect-video rounded border border-gray-600 overflow-hidden shadow-lg z-10 flex items-center justify-center bg-gray-800">
+                 {camRef ? (
+                   <VideoTrack trackRef={camRef} className="w-full h-full object-cover bg-gray-800" />
+                 ) : (
+                   <span className="text-gray-600 text-xs">No Cam</span>
+                 )}
+                 <div className="absolute bottom-1 left-1 bg-black/50 text-[10px] text-white px-1 rounded">Cam</div>
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
