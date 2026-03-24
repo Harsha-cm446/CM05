@@ -15,7 +15,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import AgoraRTC from 'agora-rtc-sdk-ng';
 
 // Disable Agora's own logging in production
-AgoraRTC.setLogLevel(process.env.NODE_ENV === 'production' ? 4 : 1);
+AgoraRTC.setLogLevel(import.meta.env.MODE === 'production' ? 4 : 1);
 
 /**
  * Parse a numeric UID into candidateId and stream type.

@@ -24,6 +24,7 @@ export default function LiveInterview() {
   const [duplicateQuestions, setDuplicateQuestions] = useState(null);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
 
   // Removed state and sync effects for legacy LiveInterview streams
 
