@@ -204,9 +204,7 @@ export default function useAgora() {
 
       try {
         addLog(`Joining channel "${channel}" as HR (uid=${uid})...`);
-        const safeAppId = "921218d596ef4db18072b5c4730ba6da"; // HARCODED FOR DEBUGGING
-        addLog(`Using forced AppID override: ${safeAppId}`);
-        await client.join(safeAppId, channel, token, uid);
+        await client.join(appId, channel, token, uid);
         joinedRef.current = true;
         addLog(`✅ Joined channel "${channel}" successfully`);
         setConnectionState('CONNECTED');
@@ -228,8 +226,7 @@ export default function useAgora() {
       try {
         // Join with camera UID first
         addLog(`Joining channel "${channel}" as candidate cam (uid=${camUid})...`);
-        const safeAppId = "921218d596ef4db18072b5c4730ba6da"; // HARCODED FOR DEBUGGING
-        await client.join(safeAppId, channel, camToken, camUid);
+        await client.join(appId, channel, camToken, camUid);
         joinedRef.current = true;
         addLog(`✅ Joined channel "${channel}" with cam UID`);
         setConnectionState('CONNECTED');
