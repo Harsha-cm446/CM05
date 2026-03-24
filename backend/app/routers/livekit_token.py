@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.core.config import settings
 from livekit import api
 
-router = APIRouter(prefix="/livekit", tags=["LiveKit"])
+router = APIRouter(prefix="/api/livekit", tags=["LiveKit"])
 
 @router.get("/get-token")
 def get_livekit_token(

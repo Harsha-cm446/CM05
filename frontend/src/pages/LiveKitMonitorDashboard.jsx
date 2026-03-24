@@ -12,28 +12,25 @@ import {
 import '@livekit/components-styles/index.css';
 import { Track } from 'livekit-client';
 import { Loader2, Users } from 'lucide-react';
+import api from '../services/api';
 
 export default function LiveKitMonitorDashboard({ sessionId, embedded = false, focusId = null }) {
   const [token, setToken] = useState(null);
   const [error, setError] = useState(null);
-  
+
   // For the HR monitor, we assign a special user ID (e.g., hr-monitor-sessionX)
   const hrUserId = `hr-monitor-${sessionId}`;
-  
+
   useEffect(() => {
     // Fetch LiveKit Token
     const fetchToken = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/livekit/get-token?user=${hrUserId}&room=${sessionId}`);
-        if (!response.ok) {
-          throw new Error('Failed to fetch LiveKit token');
-        }
-        const data = await response.json();
-        setToken(data.token);
+        const response = await api.get('/livekit/get-token', {
+          params: { user: hrUserId, room: sessionId }
+        });
+        setToken(response.data.token);
       } catch (err) {
-        setError(err.message);
-      }
-    };
+        setError(err.message || 'Failed to fetch LiveKit token');
     
     fetchToken();
   }, [sessionId, hrUserId]);
