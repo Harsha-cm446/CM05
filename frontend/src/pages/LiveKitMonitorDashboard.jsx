@@ -33,6 +33,10 @@ export default function LiveKitMonitorDashboard({ sessionId, embedded = false, f
         setError(err.message || 'Failed to fetch LiveKit token');
       }
     };
+
+    if (sessionId) {
+      fetchToken();
+    }
   }, [sessionId, hrUserId]);
 
   if (error) {
