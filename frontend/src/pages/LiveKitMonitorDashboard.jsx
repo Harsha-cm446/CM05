@@ -31,8 +31,8 @@ export default function LiveKitMonitorDashboard({ sessionId, embedded = false, f
         setToken(response.data.token);
       } catch (err) {
         setError(err.message || 'Failed to fetch LiveKit token');
-    
-    fetchToken();
+      }
+    };
   }, [sessionId, hrUserId]);
 
   if (error) {
