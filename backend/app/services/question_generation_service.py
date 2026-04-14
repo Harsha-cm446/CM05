@@ -137,6 +137,38 @@ class QuestionGenerationService:
                 pass
         return {}
 
+    def _ensure_multi_reference_answers(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize question payload to include 2-3 typed ideal answers."""
+        refs: List[Dict[str, str]] = []
+        for item in payload.get("ideal_answers", []) or []:
+            if isinstance(item, dict):
+                ans = str(item.get("answer", "")).strip()
+                typ = str(item.get("type", "theoretical")).strip() or "theoretical"
+            else:
+                ans = str(item or "").strip()
+                typ = "theoretical"
+            if ans:
+                refs.append({"answer": ans, "type": typ})
+
+        base = str(payload.get("ideal_answer", "")).strip()
+        if not refs and base:
+            refs = [
+                {"answer": base, "type": "theoretical"},
+                {"answer": "In practice, I would describe implementation choices, trade-offs, and measurable outcomes.", "type": "practical"},
+                {"answer": "For example, I would mention one real project and quantify the result achieved.", "type": "example_based"},
+            ]
+
+        if not refs:
+            refs = [
+                {"answer": "I would explain the concept clearly, then apply it to a practical case.", "type": "theoretical"},
+                {"answer": "In practice, I would describe implementation details, constraints, and trade-offs.", "type": "practical"},
+                {"answer": "For example, I would cite a real scenario with concrete impact.", "type": "example_based"},
+            ]
+
+        payload["ideal_answers"] = refs[:3]
+        payload["ideal_answer"] = payload["ideal_answers"][0]["answer"]
+        return payload
+
     # ── Model 1: Behavioral Question Generator ───────
 
     async def generate_behavioral_question(
@@ -211,7 +243,7 @@ Return ONLY valid JSON:
         parsed["is_coding"] = False
         parsed.setdefault("evaluation_keywords", ["teamwork", "communication"])
         parsed["keywords"] = parsed["evaluation_keywords"]
-        return parsed
+        return self._ensure_multi_reference_answers(parsed)
 
     # ── Model 2: Technical Question Generator ────────
 
@@ -301,7 +333,7 @@ Return ONLY valid JSON:
         parsed.setdefault("is_coding", is_coding)
         parsed.setdefault("evaluation_keywords", ["technical", "depth"])
         parsed["keywords"] = parsed["evaluation_keywords"]
-        return parsed
+        return self._ensure_multi_reference_answers(parsed)
 
     # ── Model 3: Situational Question Generator ──────
 
@@ -363,7 +395,7 @@ Return ONLY valid JSON:
         parsed["is_coding"] = False
         parsed.setdefault("evaluation_keywords", ["judgment", "reasoning"])
         parsed["keywords"] = parsed["evaluation_keywords"]
-        return parsed
+        return self._ensure_multi_reference_answers(parsed)
 
     # ── Model 4: Cultural Fit Question Generator ─────
 
@@ -424,7 +456,7 @@ Return ONLY valid JSON:
         parsed["is_coding"] = False
         parsed.setdefault("evaluation_keywords", ["culture", "values"])
         parsed["keywords"] = parsed["evaluation_keywords"]
-        return parsed
+        return self._ensure_multi_reference_answers(parsed)
 
     # ── Question Router ───────────────────────────────
 

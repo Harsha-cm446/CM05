@@ -63,7 +63,7 @@ CORE RULES:
    - Moderate (50-80%): ask clarification, probe practical understanding, give a scenario.
    - Weak (<50%): simplify slightly, ask a supportive fallback, or move to an easier related topic.
 6. Follow-up questions MUST be context-aware and directly reference the candidate's previous answer.
-7. Always generate a comprehensive ideal reference answer (at least 3-4 sentences) and 5-7 evaluation keywords.
+7. Always generate 2-3 distinct ideal reference answers (conceptual, practical, and example-based) and 5-7 evaluation keywords.
 8. Always return valid JSON — no markdown, no extra text.
 
 QUESTION VARIETY (mix these types across the interview):
@@ -173,6 +173,72 @@ class AIService:
                 pass
         return {}
 
+    def _normalize_ideal_answers(
+        self,
+        ideal_answer: str = "",
+        ideal_answers: Optional[List[Any]] = None,
+    ) -> List[Dict[str, str]]:
+        """Return 2-3 normalized ideal answers for robust best-match scoring."""
+        normalized: List[Dict[str, str]] = []
+
+        for item in ideal_answers or []:
+            if isinstance(item, dict):
+                txt = str(item.get("answer", "")).strip()
+                typ = str(item.get("type", "theoretical")).strip() or "theoretical"
+            else:
+                txt = str(item or "").strip()
+                typ = "theoretical"
+            if txt:
+                normalized.append({"answer": txt, "type": typ})
+
+        if not normalized and ideal_answer:
+            base = str(ideal_answer).strip()
+            if base:
+                normalized = [
+                    {"answer": base, "type": "theoretical"},
+                    {"answer": f"In practice, I would apply this by {base.lower()}", "type": "practical"},
+                    {"answer": f"For example, in a production setting I would demonstrate this by {base.lower()}", "type": "example_based"},
+                ]
+
+        if not normalized:
+            normalized = [
+                {"answer": "A strong answer should explain the concept clearly, apply it practically, and provide a concrete example.", "type": "theoretical"},
+                {"answer": "In practice, I would describe implementation trade-offs, risks, and measurable outcomes.", "type": "practical"},
+                {"answer": "For example, I would cite a real project where this approach improved reliability or performance.", "type": "example_based"},
+            ]
+
+        return normalized[:3]
+
+    def _merge_multimodal_metrics(self, live_metrics: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        """Normalize live multimodal metrics to [0,1] for RL adaptation."""
+        m = live_metrics or {}
+
+        def _norm01(val: Any, default: float) -> float:
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                return default
+            if v > 1.0:
+                v = v / 100.0
+            return max(0.0, min(1.0, v))
+
+        return {
+            "confidence": _norm01(m.get("confidence"), 0.5),
+            "stress": _norm01(m.get("stress"), 0.3),
+            "attention": _norm01(m.get("attention"), 0.6),
+        }
+
+    def _ensure_question_multiref(self, question_data: Dict[str, Any], round_type: str) -> Dict[str, Any]:
+        """Ensure generated question payload always contains 2-3 ideal references."""
+        refs = self._normalize_ideal_answers(
+            ideal_answer=str(question_data.get("ideal_answer", "")),
+            ideal_answers=question_data.get("ideal_answers"),
+        )
+        question_data["ideal_answers"] = refs
+        question_data["ideal_answer"] = refs[0]["answer"]
+        question_data.setdefault("round", round_type)
+        return question_data
+
     # ── JD Analysis ───────────────────────────────────
 
     async def analyze_job_description(self, job_description: str, job_title: str) -> Dict[str, Any]:
@@ -225,6 +291,7 @@ Return ONLY a JSON object:
         session_id: str = None,
         candidate_profile_context: str = "",
         coding_count: int = 0,
+        live_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate an adaptive interview question using specialized generators
         with RL-based difficulty calibration and redundancy checking."""
@@ -246,13 +313,26 @@ Return ONLY a JSON object:
                 if last_score is not None:
                     rl_adaptation_service.record_response(session_id, last_score / 100.0)
 
+                if jd_analysis:
+                    known_topics = list(dict.fromkeys(
+                        (jd_analysis.get("technical_topics", []) or []) +
+                        (jd_analysis.get("hr_topics", []) or [])
+                    ))
+                    covered_topics = [
+                        t for t in known_topics
+                        if any(t.lower() in (q or "").lower() for q in (previous_questions or [])[-10:])
+                    ]
+                    rl_adaptation_service.update_topic_coverage(session_id, covered_topics)
+
                 # Now get next action with updated environment state
                 perf = (last_score / 100.0) if last_score is not None else 0.5
+                mm = self._merge_multimodal_metrics(live_metrics)
+                perf = max(0.0, min(1.0, (perf * 0.8) + (mm["attention"] * 0.2)))
                 action = rl_adaptation_service.get_next_action(
                     session_id,
-                    confidence=perf,
+                    confidence=mm["confidence"],
                     performance=perf,
-                    stress=max(0.0, 1.0 - perf),
+                    stress=mm["stress"],
                 )
                 calibrated_difficulty = action.get("recommended_difficulty", difficulty)
         except Exception as e:
@@ -327,6 +407,7 @@ Return ONLY a JSON object:
         question_data.setdefault("is_coding", False)
         question_data.setdefault("followup_trigger_conditions", {})
         question_data["keywords"] = question_data["evaluation_keywords"]
+        question_data = self._ensure_question_multiref(question_data, round_type)
 
         return question_data
 
@@ -424,6 +505,11 @@ Return ONLY a JSON object in this exact format:
   "round": "{round_type}",
   "question": "Your SHORT interview question here (1-2 sentences max)",
   "ideal_answer": "Short humanized answer in first-person (2-4 sentences, conversational tone)",
+    "ideal_answers": [
+        {{"answer": "Version 1", "type": "theoretical"}},
+        {{"answer": "Version 2", "type": "practical"}},
+        {{"answer": "Version 3", "type": "example_based"}}
+    ],
   "evaluation_keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
   "difficulty_level": "{difficulty}",
   "is_coding": false,
@@ -510,6 +596,7 @@ Return ONLY a JSON object in this exact format:
         round_type: str = "Technical",
         scoring_weights: Dict[str, float] = None,
         live_confidence: float = None,
+        ideal_answers: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """Phase 1: Instant scoring using local models only (no LLM calls).
         Returns a score within ~1-2 seconds.
@@ -525,18 +612,25 @@ Return ONLY a JSON object in this exact format:
                 "phase": "instant",
             }
 
-        # 1. CrossEncoder reranking for content scoring
+        refs = self._normalize_ideal_answers(ideal_answer=ideal_answer, ideal_answers=ideal_answers)
+        ref_texts = [r["answer"] for r in refs]
+
+        # 1. Best-match semantic scoring across all ideal references
         from app.services.model_registry import model_registry
         if model_registry.cross_encoder:
-            # Predict returns a logit score, usually between -10 and 10. We map it to 0-100.
-            # E.g. ms-marco CrossEncoder: positive > 0, typical ~3-5 for good, negative for bad.
-            pred_scores = model_registry.cross_encoder.predict([(ideal_answer, candidate_answer)])
-            score = float(pred_scores[0]) if isinstance(pred_scores, (list, np.ndarray)) else float(pred_scores)
-            # Sigmoid-like scaling centered around 0
-            sim_score = 100.0 / (1.0 + np.exp(-score))
+            pairs = [(ref, candidate_answer) for ref in ref_texts]
+            pred_scores = model_registry.cross_encoder.predict(pairs)
+            pred_arr = np.array(pred_scores, dtype=float).reshape(-1)
+            best_idx = int(np.argmax(pred_arr))
+            best_raw = float(pred_arr[best_idx])
+            sim_score = 100.0 / (1.0 + np.exp(-best_raw))
         else:
-            embeddings = await asyncio.to_thread(self.embedding_model.encode, [ideal_answer, candidate_answer])
-            raw_sim = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0])
+            embeddings = await asyncio.to_thread(self.embedding_model.encode, ref_texts + [candidate_answer])
+            cand_emb = embeddings[-1]
+            ref_embs = embeddings[:-1]
+            sims = cosine_similarity([cand_emb], ref_embs)[0]
+            best_idx = int(np.argmax(sims))
+            raw_sim = float(sims[best_idx])
             sim_score = max(0.0, min(100.0, (raw_sim - 0.10) / 0.65 * 100))
 
         # 2. Semantic Keyword matching + WordNet synonym expansion
@@ -687,6 +781,7 @@ Return ONLY a JSON object in this exact format:
             "keywords_missed": missed,
             "feedback": feedback,
             "answer_strength": answer_strength,
+            "best_matching_ideal_answer_index": int(best_idx),
             "phase": "instant",
         }
 
@@ -699,13 +794,19 @@ Return ONLY a JSON object in this exact format:
         instant_result: Dict[str, Any],
         round_type: str = "Technical",
         scoring_weights: Dict[str, float] = None,
+        ideal_answers: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """Phase 2: Deep analysis using LLM (runs in background).
         Enhances the instant result with LLM depth and feedback.
         """
         try:
+            refs = self._normalize_ideal_answers(ideal_answer=ideal_answer, ideal_answers=ideal_answers)
+            best_idx = int(instant_result.get("best_matching_ideal_answer_index", 0))
+            best_idx = max(0, min(best_idx, len(refs) - 1))
+            rubric_ideal = refs[best_idx]["answer"]
+
             # Run rubric evaluation, depth evaluation, and feedback in parallel
-            rubric_task = self._evaluate_rubric(question, ideal_answer, candidate_answer, round_type)
+            rubric_task = self._evaluate_rubric(question, rubric_ideal, candidate_answer, round_type)
             depth_task = self._evaluate_depth(question, candidate_answer, instant_result["similarity_score"])
             feedback_task = self._get_ai_feedback(question, candidate_answer, instant_result["overall_score"], round_type)
 
@@ -767,6 +868,7 @@ Return ONLY a JSON object in this exact format:
                 "overall_score": round(overall, 1),
                 "feedback": feedback if feedback else instant_result["feedback"],
                 "answer_strength": answer_strength,
+                "best_matching_ideal_answer_index": best_idx,
                 "phase": "deep",
             }
         except Exception as e:
@@ -783,6 +885,7 @@ Return ONLY a JSON object in this exact format:
         is_coding: bool = False,
         scoring_weights: Dict[str, float] = None,
         live_confidence: float = None,
+        ideal_answers: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """Full evaluation: runs instant first, then deep in parallel.
         Returns the best available result.
@@ -792,6 +895,7 @@ Return ONLY a JSON object in this exact format:
             question, ideal_answer, candidate_answer, keywords, round_type,
             scoring_weights=scoring_weights,
             live_confidence=live_confidence,
+            ideal_answers=ideal_answers,
         )
 
         # Phase 2: Deep (parallel LLM calls)
@@ -800,6 +904,7 @@ Return ONLY a JSON object in this exact format:
                 self.evaluate_answer_deep(
                     question, ideal_answer, candidate_answer, keywords, instant, round_type,
                     scoring_weights=scoring_weights,
+                    ideal_answers=ideal_answers,
                 ),
                 timeout=60.0,  # Increased timeout for paper benchmark parallelization
             )
@@ -951,6 +1056,20 @@ Provide constructive feedback: what was good, what could be improved, and one sp
         return {
             "question": chosen,
             "ideal_answer": f"Candidate should demonstrate deep understanding of their code: {code_eval.get('feedback', 'Explain the logic, trade-offs, and potential improvements.')}",
+            "ideal_answers": [
+                {
+                    "answer": f"I would explain the core logic, complexity, and correctness of my approach clearly using this code as reference: {code_eval.get('feedback', 'Explain the logic and trade-offs.')}",
+                    "type": "theoretical",
+                },
+                {
+                    "answer": "In practice, I would walk through edge cases, then show what I would refactor for readability and performance.",
+                    "type": "practical",
+                },
+                {
+                    "answer": "For example, I would test empty input, boundary values, and worst-case size to prove behavior under pressure.",
+                    "type": "example_based",
+                },
+            ],
             "evaluation_keywords": ["logic", "complexity", "edge cases", "optimization", "explanation"],
             "keywords": ["logic", "complexity", "edge cases", "optimization", "explanation"],
             "difficulty_level": difficulty,

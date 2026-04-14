@@ -490,6 +490,26 @@ class RLAdaptationService:
         self._session_envs.pop(session_id, None)
         self._session_adaptation_meta.pop(session_id, None)
 
+    def update_topic_coverage(self, session_id: str, topics: List[str]) -> Dict[str, Any]:
+        """Inject externally observed topic coverage from real interview context."""
+        env = self._session_envs.get(session_id)
+        if not env:
+            return {"updated": False, "reason": "Session not found"}
+
+        cleaned = [str(t).strip().lower() for t in (topics or []) if str(t).strip()]
+        for topic in cleaned:
+            env.topics_covered.add(topic)
+
+        # Keep denominator dynamic to avoid punishing narrow role definitions.
+        env.total_topics = max(env.total_topics, len(env.topics_covered), 1)
+        env.topic_coverage = len(env.topics_covered) / max(env.total_topics, 1)
+
+        return {
+            "updated": True,
+            "topic_count": len(env.topics_covered),
+            "topic_coverage": round(env.topic_coverage, 3),
+        }
+
     def get_next_action(
         self,
         session_id: str,

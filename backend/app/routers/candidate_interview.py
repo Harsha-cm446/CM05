@@ -52,10 +52,12 @@ async def _enrich_evaluation_in_background(
     db, session_id, question_id, q_doc, answer_text, instant_result, round_type, scoring_weights=None
 ):
     try:
+        print(f"[PHASE2][candidate] started session={session_id} qid={question_id}")
         deep = await asyncio.wait_for(
             ai_service.evaluate_answer_deep(
                 question=q_doc["question"],
                 ideal_answer=q_doc.get("ideal_answer", ""),
+                ideal_answers=q_doc.get("ideal_answers"),
                 candidate_answer=answer_text,
                 keywords=q_doc.get("keywords", []),
                 instant_result=instant_result,
@@ -66,10 +68,80 @@ async def _enrich_evaluation_in_background(
         )
         await db.candidate_ai_sessions.update_one(
             {"_id": ObjectId(session_id), "responses.question_id": question_id},
-            {"$set": {"responses.$.evaluation": deep}}
+            {
+                "$set": {
+                    "responses.$.evaluation": deep,
+                    "responses.$.evaluation_status": "final",
+                    "responses.$.phase2_completed_at": datetime.utcnow(),
+                    "responses.$.debug_scores.deep_overall": deep.get("overall_score"),
+                }
+            }
         )
-    except Exception:
-        pass
+        print(
+            f"[PHASE2][candidate] completed session={session_id} qid={question_id} "
+            f"deep_overall={deep.get('overall_score')}"
+        )
+        await _recompute_candidate_scores(db, session_id)
+    except Exception as e:
+        print(f"[Phase2 ERROR][candidate][session={session_id}][qid={question_id}] {e}")
+        try:
+            await db.candidate_ai_sessions.update_one(
+                {"_id": ObjectId(session_id), "responses.question_id": question_id},
+                {
+                    "$set": {
+                        "responses.$.evaluation_status": "failed",
+                        "responses.$.phase2_error": str(e),
+                        "responses.$.phase2_completed_at": datetime.utcnow(),
+                    }
+                },
+            )
+            await _recompute_candidate_scores(db, session_id)
+        except Exception as nested:
+            print(f"[Phase2 ERROR][candidate][persist-failed] {nested}")
+
+
+async def _recompute_candidate_scores(db, session_id: str):
+    """Recompute scores from latest persisted responses and phase-2 state."""
+    latest = await db.candidate_ai_sessions.find_one(
+        {"_id": ObjectId(session_id)},
+        {"questions": 1, "responses": 1},
+    )
+    if not latest:
+        return
+
+    questions = latest.get("questions", [])
+    responses = latest.get("responses", [])
+
+    tech_responses = [
+        r for r in responses
+        if any(q.get("round") == "Technical" for q in questions if q.get("question_id") == r.get("question_id"))
+    ]
+    hr_responses = [
+        r for r in responses
+        if any(q.get("round") == "HR" for q in questions if q.get("question_id") == r.get("question_id"))
+    ]
+
+    pending_count = sum(
+        1 for r in responses if r.get("evaluation_status") == "instant"
+    )
+    tech_score = ai_service.calculate_round_score(tech_responses)
+    hr_score = ai_service.calculate_round_score(hr_responses)
+    await db.candidate_ai_sessions.update_one(
+        {"_id": ObjectId(session_id)},
+        {
+            "$set": {
+                "technical_score": tech_score,
+                "hr_score": hr_score,
+                "phase2_pending_count": pending_count,
+                "phase2_completed": pending_count == 0,
+                "phase2_last_recomputed_at": datetime.utcnow(),
+            }
+        },
+    )
+    print(
+        f"[PHASE2][candidate] recomputed session={session_id} "
+        f"technical={tech_score} hr={hr_score} pending={pending_count}"
+    )
 
 
 # ── Schemas ───────────────────────────────────────────
@@ -231,6 +303,7 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
                 "question_id": next_qid,
                 "question": q_data["question"],
                 "ideal_answer": q_data.get("ideal_answer", ""),
+                "ideal_answers": q_data.get("ideal_answers", []),
                 "keywords": q_data.get("keywords", []),
                 "difficulty": next_difficulty,
                 "round": current_round,
@@ -340,6 +413,7 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
                 "question_id": question_id,
                 "question": q_data["question"],
                 "ideal_answer": q_data.get("ideal_answer", ""),
+                "ideal_answers": q_data.get("ideal_answers", []),
                 "keywords": q_data.get("keywords", []),
                 "difficulty": difficulty,
                 "round": "Technical",
@@ -349,6 +423,8 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
         "responses": [],
         "technical_score": None,
         "hr_score": None,
+        "phase2_completed": True,
+        "phase2_pending_count": 0,
         "processing_time_total": startup_processing,
         "proctoring": {
             "gaze_violations": 0,
@@ -482,15 +558,23 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
     else:
         # Two-phase: instant score first
         scoring_weights = ai_session.get("scoring_weights")
-        live_conf = ai_session.get("current_metrics", {}).get("confidence", None)
+        live_metrics = ai_session.get("current_metrics", {})
+        live_conf = live_metrics.get("confidence", None)
+        phase1_start = time.time()
         instant_eval = await ai_service.evaluate_answer_instant(
             question=q_doc["question"],
             ideal_answer=q_doc.get("ideal_answer", ""),
+            ideal_answers=q_doc.get("ideal_answers"),
             candidate_answer=answer_text,
             keywords=q_doc.get("keywords", []),
             round_type=q_doc.get("round", "Technical"),
             scoring_weights=scoring_weights,
             live_confidence=live_conf,
+        )
+        phase1_time = time.time() - phase1_start
+        print(
+            f"[PHASE1][candidate] session={str(ai_session['_id'])} qid={body.question_id} "
+            f"time_s={phase1_time:.3f} instant_overall={instant_eval.get('overall_score')}"
         )
 
         # Parallel: deep evaluation + next question generation
@@ -513,6 +597,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
             previous_answers=prev_answers,
             last_score=last_score,
             jd_analysis=ai_session.get("jd_analysis"),
+            live_metrics=live_metrics,
             coding_count=coding_count,
             session_id=str(ai_session["_id"]),
         )
@@ -542,6 +627,11 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
         "answer_text": answer_text,
         "code_text": body.code_text,
         "evaluation": evaluation,
+        "evaluation_status": "final" if is_coding else "instant",
+        "debug_scores": {
+            "instant_overall": evaluation.get("overall_score"),
+            "deep_overall": evaluation.get("overall_score") if is_coding else None,
+        },
         "answered_at": datetime.utcnow(),
     }
 
@@ -553,7 +643,13 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
         {"_id": ai_session["_id"]},
         {
             "$push": {"responses": response_doc},
-            "$inc": {"processing_time_total": processing_time},
+            "$set": {
+                "phase2_completed": True if is_coding else False,
+            },
+            "$inc": {
+                "processing_time_total": processing_time,
+                "phase2_pending_count": 0 if is_coding else 1,
+            },
         },
     )
 
@@ -566,6 +662,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
         await _complete_candidate_session(db, ai_session, candidate, all_responses)
         return {
             "evaluation": evaluation,
+            "evaluation_status": "final" if is_coding else "instant",
             "is_complete": True,
             "reason": "time_expired",
             "time_status": time_status,
@@ -608,6 +705,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
                 )
                 return {
                     "evaluation": evaluation,
+                    "evaluation_status": "final" if is_coding else "instant",
                     "is_complete": True,
                     "reason": "technical_cutoff_not_met",
                     "technical_score": tech_score,
@@ -637,6 +735,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
                         previous_answers=[r["answer_text"] for r in all_responses],
                         last_score=evaluation.get("overall_score", 50),
                         jd_analysis=ai_session.get("jd_analysis"),
+                        live_metrics=live_metrics,
                         coding_count=coding_count,
                         session_id=str(ai_session["_id"]),
                     )
@@ -660,6 +759,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
             previous_answers=prev_answers,
             last_score=last_score,
             jd_analysis=ai_session.get("jd_analysis"),
+            live_metrics=ai_session.get("current_metrics", {}),
             coding_count=coding_count,
             session_id=str(ai_session["_id"]),
         )
@@ -673,6 +773,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
         "question_id": next_qid,
         "question": next_q_data["question"],
         "ideal_answer": next_q_data.get("ideal_answer", ""),
+        "ideal_answers": next_q_data.get("ideal_answers", []),
         "keywords": next_q_data.get("keywords", []),
         "difficulty": next_difficulty,
         "round": current_round,
@@ -689,6 +790,8 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, back
 
     return {
         "evaluation": evaluation,
+        "evaluation_status": "final" if is_coding else "instant",
+        "phase2_completed": True if is_coding else False,
         "is_complete": False,
         "next_question": {
             "question_id": next_qid,
@@ -759,9 +862,14 @@ async def get_candidate_report(token: str):
     if not ai_session:
         raise HTTPException(status_code=404, detail="Interview not started")
 
+    await _recompute_candidate_scores(db, str(ai_session["_id"]))
+    ai_session = await db.candidate_ai_sessions.find_one({"_id": ai_session["_id"]})
+
     user_proxy = {"name": ai_session.get("candidate_name", "Candidate")}
     report = await ai_service.generate_report(session=ai_session, user=user_proxy)
     report["candidate_email"] = ai_session.get("candidate_email", "")
+    report["phase2_completed"] = ai_session.get("phase2_completed", False)
+    report["phase2_pending_count"] = ai_session.get("phase2_pending_count", 0)
     return report
 
 
@@ -778,6 +886,8 @@ async def get_candidate_report_pdf(token: str):
         raise HTTPException(status_code=404, detail="Interview not started")
 
     try:
+        await _recompute_candidate_scores(db, str(ai_session["_id"]))
+        ai_session = await db.candidate_ai_sessions.find_one({"_id": ai_session["_id"]})
         user_proxy = {"name": ai_session.get("candidate_name", "Candidate")}
         report = await ai_service.generate_report(session=ai_session, user=user_proxy)
         report["candidate_email"] = ai_session.get("candidate_email", "")
@@ -965,14 +1075,21 @@ async def get_duplicate_questions(session_id: str):
 
 async def _complete_candidate_session(db, ai_session: dict, candidate: dict, all_responses: list):
     """Mark candidate session as completed and compute round scores."""
-    questions = ai_session.get("questions", [])
+    # Re-read latest session so deep-evaluation background updates are included.
+    latest_session = await db.candidate_ai_sessions.find_one(
+        {"_id": ai_session["_id"]},
+        {"questions": 1, "responses": 1},
+    )
+
+    questions = (latest_session or ai_session).get("questions", [])
+    responses = (latest_session or ai_session).get("responses", all_responses)
 
     tech_responses = [
-        r for r in all_responses
+        r for r in responses
         if any(q.get("round") == "Technical" for q in questions if q["question_id"] == r["question_id"])
     ]
     hr_responses = [
-        r for r in all_responses
+        r for r in responses
         if any(q.get("round") == "HR" for q in questions if q["question_id"] == r["question_id"])
     ]
 
@@ -1175,6 +1292,7 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
         },
         "person_count": person_count,
     }
+    current_metrics = ai_session.get("current_metrics", {}).copy()
 
     # ── Store emotion timeline data point (sampled every ~5s) ──
     if body.video_frame and multimodal_engine is not None:
@@ -1197,6 +1315,8 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
                         {"_id": ai_session["_id"]},
                         {"$push": {"emotion_timeline": emotion_point}},
                     )
+                current_metrics["confidence"] = round(float(latest_emotion.get("confidence_score", 50)), 1)
+                current_metrics["stress"] = round(float(max(0.0, 100.0 - latest_emotion.get("emotion_stability", 50))), 1)
         except Exception:
             pass  # Non-critical — don't break the proctoring pipeline
 
@@ -1207,6 +1327,14 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
         response["face_absent"] = proctor_result.get("face_absent", False)
         response["attention"] = proctor_result.get("attention")
         response["risk"] = proctor_result.get("risk")
+        attn = proctor_result.get("attention")
+        if isinstance(attn, dict):
+            attn = attn.get("score")
+        try:
+            if attn is not None:
+                current_metrics["attention"] = round(float(attn), 1)
+        except (TypeError, ValueError):
+            pass
 
         # Persist proctoring detections to DB
         proctor_update = {}
@@ -1234,6 +1362,12 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
                 {"_id": ai_session["_id"]},
                 proctor_update,
             )
+
+    if current_metrics:
+        await db.candidate_ai_sessions.update_one(
+            {"_id": ai_session["_id"]},
+            {"$set": {"current_metrics": current_metrics, "current_metrics_updated_at": datetime.utcnow()}},
+        )
 
     return response
 

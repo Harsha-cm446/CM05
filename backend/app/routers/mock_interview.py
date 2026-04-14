@@ -139,6 +139,8 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         "current_question_index": 0,
         "technical_score": None,
         "hr_score": None,
+        "phase2_completed": True,
+        "phase2_pending_count": 0,
         "processing_time_total": 0.0,  # Track cumulative AI processing time
         "proctoring": {
             "gaze_violations": 0,
@@ -196,6 +198,7 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         "question_id": str(uuid.uuid4()),
         "question": question_data["question"],
         "ideal_answer": question_data.get("ideal_answer", ""),
+        "ideal_answers": question_data.get("ideal_answers", []),
         "keywords": question_data.get("keywords", []),
         "difficulty": data.difficulty.value,
         "round": "Technical",
@@ -203,7 +206,10 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
     }
     await db.mock_sessions.update_one(
         {"_id": ObjectId(session_id)},
-        {"$push": {"questions": question_doc}},
+        {
+            "$push": {"questions": question_doc},
+            "$set": {"last_question_issued_at": datetime.utcnow()},
+        },
     )
 
     # Track startup processing time
@@ -238,10 +244,12 @@ async def _enrich_evaluation_in_background(
 ):
     try:
         from bson import ObjectId
+        print(f"[PHASE2][mock] started session={session_id} qid={question_id}")
         deep = await asyncio.wait_for(
             ai_service.evaluate_answer_deep(
                 question=q_doc["question"],
                 ideal_answer=q_doc.get("ideal_answer", ""),
+                ideal_answers=q_doc.get("ideal_answers"),
                 candidate_answer=answer_text,
                 keywords=q_doc.get("keywords", []),
                 instant_result=instant_result,
@@ -252,10 +260,77 @@ async def _enrich_evaluation_in_background(
         )
         await db.mock_sessions.update_one(
             {"_id": ObjectId(session_id), "responses.question_id": question_id},
-            {"$set": {"responses.$.evaluation": deep}}
+            {
+                "$set": {
+                    "responses.$.evaluation": deep,
+                    "responses.$.evaluation_status": "final",
+                    "responses.$.phase2_completed_at": datetime.utcnow(),
+                    "responses.$.debug_scores.deep_overall": deep.get("overall_score"),
+                }
+            }
         )
-    except Exception:
-        pass
+        print(
+            f"[PHASE2][mock] completed session={session_id} qid={question_id} "
+            f"deep_overall={deep.get('overall_score')}"
+        )
+        await _recompute_mock_scores(db, session_id)
+    except Exception as e:
+        print(f"[Phase2 ERROR][mock][session={session_id}][qid={question_id}] {e}")
+        try:
+            await db.mock_sessions.update_one(
+                {"_id": ObjectId(session_id), "responses.question_id": question_id},
+                {
+                    "$set": {
+                        "responses.$.evaluation_status": "failed",
+                        "responses.$.phase2_error": str(e),
+                        "responses.$.phase2_completed_at": datetime.utcnow(),
+                    }
+                },
+            )
+            await _recompute_mock_scores(db, session_id)
+        except Exception as nested:
+            print(f"[Phase2 ERROR][mock][persist-failed] {nested}")
+
+
+async def _recompute_mock_scores(db, session_id: str):
+    latest = await db.mock_sessions.find_one(
+        {"_id": ObjectId(session_id)},
+        {"questions": 1, "responses": 1},
+    )
+    if not latest:
+        return
+
+    questions = latest.get("questions", [])
+    responses = latest.get("responses", [])
+
+    tech_responses = [
+        r for r in responses
+        if any(q.get("round") == "Technical" for q in questions if q.get("question_id") == r.get("question_id"))
+    ]
+    hr_responses = [
+        r for r in responses
+        if any(q.get("round") == "HR" for q in questions if q.get("question_id") == r.get("question_id"))
+    ]
+
+    pending_count = sum(1 for r in responses if r.get("evaluation_status") == "instant")
+    tech_score = ai_service.calculate_round_score(tech_responses)
+    hr_score = ai_service.calculate_round_score(hr_responses)
+    await db.mock_sessions.update_one(
+        {"_id": ObjectId(session_id)},
+        {
+            "$set": {
+                "technical_score": tech_score,
+                "hr_score": hr_score,
+                "phase2_pending_count": pending_count,
+                "phase2_completed": pending_count == 0,
+                "phase2_last_recomputed_at": datetime.utcnow(),
+            }
+        },
+    )
+    print(
+        f"[PHASE2][mock] recomputed session={session_id} "
+        f"technical={tech_score} hr={hr_score} pending={pending_count}"
+    )
 
 @router.post("/{session_id}/answer")
 async def submit_answer(
@@ -348,14 +423,22 @@ async def submit_answer(
         )
     else:
         # Two-phase: get instant score first for fast UX
-        live_conf = session.get("current_metrics", {}).get("confidence", None)
+        live_metrics = session.get("current_metrics", {})
+        live_conf = live_metrics.get("confidence", None)
+        phase1_start = time.time()
         instant_eval = await ai_service.evaluate_answer_instant(
             question=question_doc["question"],
             ideal_answer=question_doc["ideal_answer"],
+            ideal_answers=question_doc.get("ideal_answers"),
             candidate_answer=answer_text,
             keywords=question_doc.get("keywords", []),
             round_type=question_doc.get("round", "Technical"),
             live_confidence=live_conf,
+        )
+        phase1_time = time.time() - phase1_start
+        print(
+            f"[PHASE1][mock] session={session_id} qid={answer.question_id} "
+            f"time_s={phase1_time:.3f} instant_overall={instant_eval.get('overall_score')}"
         )
 
         # ── Run deep evaluation + next question generation IN PARALLEL ──
@@ -381,6 +464,7 @@ async def submit_answer(
             last_score=last_score,
             jd_analysis=session.get("jd_analysis"),
             candidate_profile_context=session.get("candidate_profile_context", ""),
+            live_metrics=live_metrics,
             coding_count=coding_count,
             session_id=session_id,
         )
@@ -410,6 +494,11 @@ async def submit_answer(
         "answer_text": answer_text,
         "code_text": answer.code_text,
         "evaluation": evaluation,
+        "evaluation_status": "final" if is_coding else "instant",
+        "debug_scores": {
+            "instant_overall": evaluation.get("overall_score"),
+            "deep_overall": evaluation.get("overall_score") if is_coding else None,
+        },
         "answered_at": datetime.utcnow(),
     }
 
@@ -421,8 +510,14 @@ async def submit_answer(
         {"_id": ObjectId(session_id)},
         {
             "$push": {"responses": response_doc},
-            "$set": {"current_question_index": current_idx},
-            "$inc": {"processing_time_total": processing_time},
+            "$set": {
+                "current_question_index": current_idx,
+                "phase2_completed": True if is_coding else False,
+            },
+            "$inc": {
+                "processing_time_total": processing_time,
+                "phase2_pending_count": 0 if is_coding else 1,
+            },
         },
     )
 
@@ -434,6 +529,7 @@ async def submit_answer(
         await _complete_session(db, session_id, session)
         return {
             "evaluation": evaluation,
+            "evaluation_status": "final" if is_coding else "instant",
             "is_complete": True,
             "reason": "time_expired",
             "time_status": time_status,
@@ -470,6 +566,7 @@ async def submit_answer(
                 )
                 return {
                     "evaluation": evaluation,
+                    "evaluation_status": "final" if is_coding else "instant",
                     "is_complete": True,
                     "reason": "technical_cutoff_not_met",
                     "technical_score": tech_score,
@@ -498,6 +595,7 @@ async def submit_answer(
                         last_score=evaluation.get("overall_score", 50),
                         jd_analysis=session.get("jd_analysis"),
                         candidate_profile_context=session.get("candidate_profile_context", ""),
+                        live_metrics=live_metrics,
                         coding_count=coding_count,
                         session_id=session_id,
                     )
@@ -522,6 +620,7 @@ async def submit_answer(
             last_score=last_score,
             jd_analysis=session.get("jd_analysis"),
             candidate_profile_context=session.get("candidate_profile_context", ""),
+            live_metrics=session.get("current_metrics", {}),
             coding_count=coding_count,
             session_id=session_id,
         )
@@ -534,6 +633,7 @@ async def submit_answer(
         "question_id": str(uuid.uuid4()),
         "question": next_q_data["question"],
         "ideal_answer": next_q_data.get("ideal_answer", ""),
+        "ideal_answers": next_q_data.get("ideal_answers", []),
         "keywords": next_q_data.get("keywords", []),
         "difficulty": next_difficulty,
         "round": current_round,
@@ -543,12 +643,14 @@ async def submit_answer(
         {"_id": ObjectId(session_id)},
         {
             "$push": {"questions": next_question_doc},
-            "$set": {"difficulty": next_difficulty},
+            "$set": {"difficulty": next_difficulty, "last_question_issued_at": datetime.utcnow()},
         },
     )
 
     return {
         "evaluation": evaluation,
+        "evaluation_status": "final" if is_coding else "instant",
+        "phase2_completed": True if is_coding else False,
         "next_question": QuestionResponse(
             question_id=next_question_doc["question_id"],
             question=next_question_doc["question"],
@@ -607,7 +709,12 @@ async def get_report(session_id: str, user: dict = Depends(get_current_user)):
     if session["user_id"] != str(user["_id"]):
         raise HTTPException(status_code=403, detail="Not your session")
 
+    await _recompute_mock_scores(db, session_id)
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+
     report = await ai_service.generate_report(session=session, user=user)
+    report["phase2_completed"] = session.get("phase2_completed", False)
+    report["phase2_pending_count"] = session.get("phase2_pending_count", 0)
     return report
 
 
@@ -623,6 +730,8 @@ async def get_report_pdf(session_id: str, user: dict = Depends(get_current_user)
         raise HTTPException(status_code=403, detail="Not your session")
 
     try:
+        await _recompute_mock_scores(db, session_id)
+        session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
         report = await ai_service.generate_report(session=session, user=user)
         pdf_bytes = generate_pdf_report(report)
     except Exception as e:
@@ -917,6 +1026,34 @@ async def update_practice_metrics(
             proctor_update,
         )
 
+    # Persist live metrics so answer evaluation + RL can use real signals.
+    live = result.get("metrics") or {}
+    if live:
+        words = partial_text.split() if partial_text else []
+        word_count = len(words)
+        filler_words = ["um", "uh", "like", "you know", "basically", "actually", "literally"]
+        filler_count = sum(partial_text.lower().count(f) for f in filler_words) if partial_text else 0
+        filler_ratio = (filler_count / max(word_count, 1)) if word_count else 0.0
+
+        last_q_ts = session.get("last_question_issued_at") or session.get("started_at")
+        latency_seconds = 0.0
+        if isinstance(last_q_ts, datetime):
+            latency_seconds = max(0.0, (datetime.utcnow() - last_q_ts).total_seconds())
+
+        current_metrics = {
+            "confidence": round(float(live.get("confidence", 50)), 1),
+            "stress": round(float(live.get("stress", 50)), 1),
+            "attention": round(float(live.get("attention", 50)), 1),
+            "speech_clarity": round(float(live.get("speech_clarity", 50)), 1),
+            "hesitation_score": round(float(max(0.0, 100.0 - live.get("speech_clarity", 50))), 1),
+            "filler_word_ratio": round(float(filler_ratio), 4),
+            "answer_latency_seconds": round(float(latency_seconds), 2),
+        }
+        await db.mock_sessions.update_one(
+            {"_id": ObjectId(session_id)},
+            {"$set": {"current_metrics": current_metrics, "current_metrics_updated_at": datetime.utcnow()}},
+        )
+
     return {
         "metrics": result.get("metrics") if has_text else None,
         "suggestion": result.get("suggestion") if has_text else None,
@@ -978,8 +1115,14 @@ async def get_practice_summary(
 
 async def _complete_session(db, session_id: str, session: dict):
     """Mark session as completed and compute round scores."""
-    questions = session.get("questions", [])
-    responses = session.get("responses", [])
+    # Re-read latest session so deep-evaluation background updates are included.
+    latest_session = await db.mock_sessions.find_one(
+        {"_id": ObjectId(session_id)},
+        {"questions": 1, "responses": 1},
+    )
+
+    questions = (latest_session or session).get("questions", [])
+    responses = (latest_session or session).get("responses", [])
 
     tech_responses = [
         r for r in responses
