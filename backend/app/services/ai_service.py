@@ -631,7 +631,7 @@ Return ONLY a JSON object in this exact format:
             sims = cosine_similarity([cand_emb], ref_embs)[0]
             best_idx = int(np.argmax(sims))
             raw_sim = float(sims[best_idx])
-            sim_score = max(0.0, min(100.0, (raw_sim - 0.10) / 0.65 * 100))
+            sim_score = max(0.0, min(100.0, (raw_sim - 0.05) / 0.70 * 100))
 
         # 2. Semantic Keyword matching + WordNet synonym expansion
         answer_lower = candidate_answer.lower()
@@ -667,12 +667,12 @@ Return ONLY a JSON object in this exact format:
             if model_registry.embedding_model:
                 try:
                     k_emb = model_registry.embedding_model.encode(k_lower)
-                    # Use up to 20 representative bigrams to avoid too much compute
-                    n_gram_list = list(candidate_ngrams)[:20]
+                    # Use a wider n-gram sample to reduce false keyword misses.
+                    n_gram_list = list(candidate_ngrams)[:60]
                     if n_gram_list:
                         n_embs = model_registry.embedding_model.encode(n_gram_list)
                         sims = cosine_similarity([k_emb], n_embs)[0]
-                        if np.max(sims) > 0.75:
+                        if np.max(sims) > 0.70:
                             matched.append(k)
                             continue
                 except Exception:
@@ -691,11 +691,11 @@ Return ONLY a JSON object in this exact format:
         elif word_count < 20:
             comm_score = 35
         elif word_count < 50:
-            comm_score = 55
+            comm_score = 65
         elif word_count < 100:
-            comm_score = 70
+            comm_score = 78
         elif word_count < 200:
-            comm_score = 82
+            comm_score = 86
         else:
             comm_score = 88
         # Bonus for structured multi-sentence answers
@@ -796,8 +796,13 @@ Return ONLY a JSON object in this exact format:
         scoring_weights: Dict[str, float] = None,
         ideal_answers: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
-        """Phase 2: Deep analysis using LLM (runs in background).
-        Enhances the instant result with LLM depth and feedback.
+        """Phase 2: Deep LLM analysis with calibrated anti-collapse blending.
+
+        Key behavior:
+        - Blend: llm 70% + instant 20% + sim 10%
+        - Floor: keep at least 68% of instant score
+        - Depth: additive +/-5 adjustment
+        - Rubric-failure floor: keep at least 72% of instant score
         """
         try:
             refs = self._normalize_ideal_answers(ideal_answer=ideal_answer, ideal_answers=ideal_answers)
@@ -827,43 +832,51 @@ Return ONLY a JSON object in this exact format:
 
             rubric = {}
             rubric_ref_idx = best_idx
-            best_overall = -1.0
+            best_rubric_overall = -1.0
             for (idx, _), candidate_rubric in zip(top_refs, rubric_results):
                 if candidate_rubric and "overall" in candidate_rubric:
                     cand_overall = float(candidate_rubric.get("overall", 0.0))
-                    if cand_overall > best_overall:
-                        best_overall = cand_overall
+                    if cand_overall > best_rubric_overall:
+                        best_rubric_overall = cand_overall
                         rubric = candidate_rubric
                         rubric_ref_idx = idx
 
             if rubric and rubric.get("overall"):
                 llm_score = float(rubric["overall"])
-                # Balanced blend: deep rubric is primary, but instant signal prevents hard collapses.
-                overall = llm_score * 0.78 + sim_guard * 0.12 + instant_overall * 0.10
-                # Use rubric's depth dimension for depth_score if available
+
+                # Use rubric depth if present, but do not discard standalone depth signal.
                 if rubric.get("depth"):
-                    depth_score = float(rubric["depth"])
+                    depth_score = max(depth_score, float(rubric["depth"]) * 0.9)
 
-                # Smooth short/keyword penalty curve instead of abrupt clipping.
-                word_count = len(candidate_answer.split())
+                # Primary blend: rubric leads, instant protects, sim grounds semantics.
+                overall = (
+                    llm_score * 0.70
+                    + instant_overall * 0.20
+                    + sim_guard * 0.10
+                )
+
+                # Additive depth adjustment, bounded to avoid instability.
+                depth_delta = (depth_score - 60.0) * 0.08
+                depth_delta = max(-5.0, min(5.0, depth_delta))
+                overall += depth_delta
+
+                # Slightly widen distribution around mid-point.
+                overall = ((overall - 50.0) * 1.18) + 50.0
+
+                # Floor protection: prevent severe drops from instant evidence.
+                overall = max(overall, instant_overall * 0.68)
+
+                # Small keyword evidence bonus.
                 keyword_score = float(instant_result.get("keyword_score", 0.0))
-                shortness = max(0.0, min(1.0, (20.0 - word_count) / 20.0))
-                keyword_poor = max(0.0, min(1.0, (45.0 - keyword_score) / 45.0))
-                penalty = 1.0 - (0.22 * shortness * keyword_poor)
-                overall *= penalty
+                if keyword_score >= 60.0:
+                    kw_bonus = (keyword_score - 60.0) * 0.05
+                    overall = min(100.0, overall + kw_bonus)
 
-                # Smooth expansion to preserve score separation while avoiding collapse.
-                overall = max(0.0, min(100.0, ((overall - 50.0) * 1.10) + 50.0))
-
-                # Guardrail: avoid excessive deep drop when instant evidence is moderate/strong.
-                min_allowed = instant_overall * 0.55 if instant_overall >= 50.0 else 0.0
-                overall = max(overall, min_allowed)
-                
-                # Apply Isotonic Score Calibrator
                 overall = score_calibrator.calibrate(overall)
+                overall = max(0.0, min(100.0, overall))
 
             else:
-                # Fallback: keep existing cosine-based formula if rubric failed
+                # Rubric failed: weighted fallback with floor protection.
                 content_score = instant_result["content_score"]
                 keyword_pct = instant_result["keyword_score"]
                 comm_score = instant_result["communication_score"]
@@ -876,13 +889,10 @@ Return ONLY a JSON object in this exact format:
                     + comm_score * w.get("communication", 0.15)
                     + confidence_score * w.get("confidence", 0.10)
                 )
+                overall = ((overall - 50.0) * 1.10) + 50.0
+                overall = max(overall, instant_overall * 0.72)
                 overall = score_calibrator.calibrate(overall)
-
-            overall = max(0.0, min(100.0, overall))
-            content_score = instant_result["content_score"]
-            keyword_pct = instant_result["keyword_score"]
-            comm_score = instant_result["communication_score"]
-            confidence_score = instant_result["confidence_score"]
+                overall = max(0.0, min(100.0, overall))
 
             if overall >= 80:
                 answer_strength = "strong"
@@ -943,28 +953,40 @@ Return ONLY a JSON object in this exact format:
             return instant
 
     async def _evaluate_depth(self, question: str, answer: str, sim_score: float) -> float:
-        """Use LLM to evaluate depth of knowledge in the answer."""
-        prompt = f"""Evaluate the depth of knowledge in this interview answer on a strict 0-100 rubric scale.
+        """Evaluate depth of knowledge with calibrated partial-credit anchors."""
+        prompt = f"""Evaluate the depth of knowledge in this interview answer on a 0-100 scale.
+
+CALIBRATION - Apply generous partial credit:
+  - Any specific tool, framework, or technology mentioned -> at least 55
+  - Any practical example or real-world scenario -> at least 65
+  - Multiple concepts with explanation of why/how -> 75+
+  - Expert reasoning with trade-offs and alternatives -> 85+
+  - Only score below 40 if the answer is generic with zero concrete substance
 
 Question: {question}
 Answer: {answer}
 
 Depth Rubric:
-- 90-100 (Expert): Demonstrates exceptional depth, citing specific real-world examples, advanced frameworks, and edge-case handling.
-- 70-89 (Proficient): Goes beyond surface level, mentions practical methodologies or tools, shows solid experience.
-- 50-69 (Basic): Covers the core concepts but lacks specific details, metrics, or practical examples; purely theoretical.
-- 30-49 (Superficial): Only repeats the question terms or gives vague, high-level buzzwords; no real understanding shown.
-- 0-29 (Inadequate): Irrelevant, completely incorrect, or practically empty answer.
+- 85-100: Expert - specific real examples, advanced concepts, edge cases
+- 70-84: Proficient - practical methods, shows real-world experience
+- 55-69: Competent - core concepts covered, some practical awareness
+- 40-54: Basic - surface level, mostly theoretical
+- 20-39: Superficial - buzzwords, weak understanding
+- 0-19: Inadequate - irrelevant, incorrect, or empty
 
 Return ONLY a JSON object: {{"depth_score": <number>}}"""
 
         try:
-            response = await self._llm_generate(prompt, "You are an expert evaluator. Return only valid JSON.", fast=True)
+            response = await self._llm_generate(
+                prompt,
+                "You are a calibrated depth evaluator. Apply partial credit. Return only valid JSON.",
+                fast=False,
+            )
             parsed = self._parse_json_from_response(response)
-            score = parsed.get("depth_score", sim_score * 0.8)
+            score = parsed.get("depth_score", sim_score * 0.9)
             return max(0, min(100, float(score)))
         except Exception:
-            return sim_score * 0.8
+            return sim_score * 0.9
 
     async def _evaluate_rubric(
         self,
@@ -973,29 +995,39 @@ Return ONLY a JSON object: {{"depth_score": <number>}}"""
         candidate_answer: str,
         round_type: str,
     ) -> dict:
-        """Full rubric evaluation using LLM — 5 dimensions on 0-100 scale.
-        Used in Phase 2 deep evaluation to replace cosine-dominated scoring."""
-        prompt = f"""You are an expert technical interviewer and HR evaluator. Score this candidate answer on a 0-100 scale based exactly on how a human expert would grade it.
-Follow these rigid scoring bands to achieve high accuracy and consistency with human baseline data:
-    - Strong/Excellent Answer -> Final overall typically ~85-98: Demonstrates deep conceptual understanding and practical experience. Reward strongly even if wording differs.
-    - Moderate/Average Answer -> Final overall typically ~60-84: Shows partial understanding with some correct concepts but missing depth, clarity, or completeness.
-    - Weak/Poor Answer -> Final overall typically ~20-59: Demonstrates limited understanding, very brief response, or largely generic/partially irrelevant content.
-    - Very weak/incorrect answer -> Final overall ~0-19: Fundamentally incorrect or nearly empty response.
+        """Full rubric evaluation using LLM - 5 dimensions on 0-100 scale.
+        Uses calibrated anchors and full-budget inference for stability."""
+        prompt = f"""You are a calibrated interview scoring expert. Score this answer fairly and accurately.
+
+CALIBRATION ANCHORS (align your scores with human expert benchmarks):
+  - Completely wrong or empty answer -> overall ~10-20
+  - Vague buzzwords only, no real substance -> overall ~25-40
+  - Partial answer: correct direction but missing key concepts -> overall ~45-60
+  - Solid answer covering core concepts with practical sense -> overall ~65-78
+  - Strong answer with depth, examples, and clear understanding -> overall ~79-90
+  - Exceptional expert-level answer -> overall ~91-100
+
+CRITICAL RULES:
+  - Do not default to conservative 50-60 range.
+  - Apply partial credit: if 60% of ideal is covered, score around 60-65.
+  - If answer is correct and relevant, score at least 65.
+  - If answer shows solid understanding with specific details, score at least 75.
+  - Only score below 50 if answer is fundamentally wrong or empty.
+  - Concise correct answer is better than long vague answer. Do not penalize brevity.
 
 Question: {question}
 Ideal Answer: {ideal_answer}
 Candidate Answer: {candidate_answer}
 Interview Type: {round_type}
 
-Score each dimension on 0-100 keeping the target band in mind:
-- accuracy: Is the conceptual core of their answer correct?
-- completeness: Do they cover the most important aspects needed for a real-world scenario?
-- depth: Does the candidate show practical experience or go beyond basic surface-level knowledge?
-- relevance: Is the answer answering the question well?
-- clarity: Is the technical communication strong?
+Score each dimension on 0-100:
+- accuracy: Is the conceptual core correct?
+- completeness: Are the important aspects covered?
+- depth: Does the candidate go beyond surface level?
+- relevance: Does the answer address what was asked?
+- clarity: Is the communication clear and organized?
 
-Compute: overall = (accuracy * 0.30) + (completeness * 0.25) + (depth * 0.25) + (relevance * 0.10) + (clarity * 0.10)
-Ensure final "overall" is calibrated realistically and does not over-penalize concise but correct answers.
+Formula: overall = (accuracy*0.30) + (completeness*0.25) + (depth*0.25) + (relevance*0.10) + (clarity*0.10)
 
 Return ONLY valid JSON with no explanation, no markdown, no backticks:
 {{"accuracy": <0-100>, "completeness": <0-100>, "depth": <0-100>, "relevance": <0-100>, "clarity": <0-100>, "overall": <0-100>, "rationale": "<one sentence>"}}"""
@@ -1003,12 +1035,11 @@ Return ONLY valid JSON with no explanation, no markdown, no backticks:
         try:
             response = await self._llm_generate(
                 prompt,
-                "You are an expert interview evaluator. Return only valid JSON.",
-                fast=True,
+                "You are a calibrated interview scoring expert. Use the full 0-100 scale and return only valid JSON.",
+                fast=False,
             )
             parsed = self._parse_json_from_response(response)
             if parsed and "overall" in parsed:
-                # Clamp all values to valid range
                 for key in ["accuracy", "completeness", "depth", "relevance", "clarity", "overall"]:
                     if key in parsed:
                         parsed[key] = max(0.0, min(100.0, float(parsed[key])))
