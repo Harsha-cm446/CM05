@@ -803,32 +803,61 @@ Return ONLY a JSON object in this exact format:
             refs = self._normalize_ideal_answers(ideal_answer=ideal_answer, ideal_answers=ideal_answers)
             best_idx = int(instant_result.get("best_matching_ideal_answer_index", 0))
             best_idx = max(0, min(best_idx, len(refs) - 1))
-            rubric_ideal = refs[best_idx]["answer"]
+            instant_overall = float(instant_result.get("overall_score", 0.0))
+            sim_guard = float(instant_result.get("similarity_score", 0.0))
 
-            # Run rubric evaluation, depth evaluation, and feedback in parallel
-            rubric_task = self._evaluate_rubric(question, rubric_ideal, candidate_answer, round_type)
-            depth_task = self._evaluate_depth(question, candidate_answer, instant_result["similarity_score"])
-            feedback_task = self._get_ai_feedback(question, candidate_answer, instant_result["overall_score"], round_type)
+            # Run rubric over top references and keep the best human-like alignment.
+            ranked_refs = sorted(
+                enumerate(refs),
+                key=lambda x: 0 if x[0] == best_idx else 1,
+            )
+            top_refs = ranked_refs[: min(3, len(ranked_refs))]
+            rubric_tasks = [
+                self._evaluate_rubric(question, ref["answer"], candidate_answer, round_type)
+                for _, ref in top_refs
+            ]
+            depth_task = self._evaluate_depth(question, candidate_answer, sim_guard)
+            feedback_task = self._get_ai_feedback(question, candidate_answer, instant_overall, round_type)
 
-            rubric, depth_score, feedback = await asyncio.gather(rubric_task, depth_task, feedback_task)
+            rubric_results, depth_score, feedback = await asyncio.gather(
+                asyncio.gather(*rubric_tasks),
+                depth_task,
+                feedback_task,
+            )
 
-            # Compute final overall: LLM rubric drives 95%, semantic similarity guards 5%
-            sim_guard = instant_result.get("similarity_score", 0)  # Safe get for sim_guard
+            rubric = {}
+            rubric_ref_idx = best_idx
+            best_overall = -1.0
+            for (idx, _), candidate_rubric in zip(top_refs, rubric_results):
+                if candidate_rubric and "overall" in candidate_rubric:
+                    cand_overall = float(candidate_rubric.get("overall", 0.0))
+                    if cand_overall > best_overall:
+                        best_overall = cand_overall
+                        rubric = candidate_rubric
+                        rubric_ref_idx = idx
+
             if rubric and rubric.get("overall"):
                 llm_score = float(rubric["overall"])
-                # Trust the deeper LLM reasoning overwhelmingly over naive cosine similarity
-                overall = llm_score * 0.95 + sim_guard * 0.05
+                # Balanced blend: deep rubric is primary, but instant signal prevents hard collapses.
+                overall = llm_score * 0.78 + sim_guard * 0.12 + instant_overall * 0.10
                 # Use rubric's depth dimension for depth_score if available
                 if rubric.get("depth"):
                     depth_score = float(rubric["depth"])
 
-                # --- 🎯 EXPERT CALIBRATION CURVE TO BEAT PAPER ACCURACY ---
-                # 1. Penalty for very short, non-substantive answers
-                if len(candidate_answer.split()) < 20 and instant_result.get("keyword_score", 0) < 40:
-                    overall = min(overall, 11.0)
-                
-                # 2. Smooth mathematical expansion to mimic human variance
-                overall = max(0.0, min(100.0, ((overall - 50.0) * 1.35) + 50.0))
+                # Smooth short/keyword penalty curve instead of abrupt clipping.
+                word_count = len(candidate_answer.split())
+                keyword_score = float(instant_result.get("keyword_score", 0.0))
+                shortness = max(0.0, min(1.0, (20.0 - word_count) / 20.0))
+                keyword_poor = max(0.0, min(1.0, (45.0 - keyword_score) / 45.0))
+                penalty = 1.0 - (0.22 * shortness * keyword_poor)
+                overall *= penalty
+
+                # Smooth expansion to preserve score separation while avoiding collapse.
+                overall = max(0.0, min(100.0, ((overall - 50.0) * 1.10) + 50.0))
+
+                # Guardrail: avoid excessive deep drop when instant evidence is moderate/strong.
+                min_allowed = instant_overall * 0.55 if instant_overall >= 50.0 else 0.0
+                overall = max(overall, min_allowed)
                 
                 # Apply Isotonic Score Calibrator
                 overall = score_calibrator.calibrate(overall)
@@ -868,7 +897,7 @@ Return ONLY a JSON object in this exact format:
                 "overall_score": round(overall, 1),
                 "feedback": feedback if feedback else instant_result["feedback"],
                 "answer_strength": answer_strength,
-                "best_matching_ideal_answer_index": best_idx,
+                "best_matching_ideal_answer_index": rubric_ref_idx,
                 "phase": "deep",
             }
         except Exception as e:
@@ -948,9 +977,10 @@ Return ONLY a JSON object: {{"depth_score": <number>}}"""
         Used in Phase 2 deep evaluation to replace cosine-dominated scoring."""
         prompt = f"""You are an expert technical interviewer and HR evaluator. Score this candidate answer on a 0-100 scale based exactly on how a human expert would grade it.
 Follow these rigid scoring bands to achieve high accuracy and consistency with human baseline data:
-- Strong/Excellent Answer -> Final overall MUST be ~92-98: Demonstrates deep conceptual understanding and practical experience. Reward highly even if phrasing differs slightly.
-- Moderate/Average Answer -> Final overall MUST be ~70-80: Shows partial understanding. Mentions some right concepts but lacks depth, clarity, or completeness.
-- Weak/Poor Answer -> Final overall MUST be ~5-15: Demonstrates fundamental misunderstanding, very brief, or largely irrelevant.
+    - Strong/Excellent Answer -> Final overall typically ~85-98: Demonstrates deep conceptual understanding and practical experience. Reward strongly even if wording differs.
+    - Moderate/Average Answer -> Final overall typically ~60-84: Shows partial understanding with some correct concepts but missing depth, clarity, or completeness.
+    - Weak/Poor Answer -> Final overall typically ~20-59: Demonstrates limited understanding, very brief response, or largely generic/partially irrelevant content.
+    - Very weak/incorrect answer -> Final overall ~0-19: Fundamentally incorrect or nearly empty response.
 
 Question: {question}
 Ideal Answer: {ideal_answer}
@@ -965,7 +995,7 @@ Score each dimension on 0-100 keeping the target band in mind:
 - clarity: Is the technical communication strong?
 
 Compute: overall = (accuracy * 0.30) + (completeness * 0.25) + (depth * 0.25) + (relevance * 0.10) + (clarity * 0.10)
-Ensure final "overall" falls strictly in the correct band for the answer quality!
+Ensure final "overall" is calibrated realistically and does not over-penalize concise but correct answers.
 
 Return ONLY valid JSON with no explanation, no markdown, no backticks:
 {{"accuracy": <0-100>, "completeness": <0-100>, "depth": <0-100>, "relevance": <0-100>, "clarity": <0-100>, "overall": <0-100>, "rationale": "<one sentence>"}}"""
@@ -1213,11 +1243,16 @@ Return ONLY a JSON object:
 
             ev = resp.get("evaluation", {})
             round_type = q_doc.get("round", "Technical")
+            ideal_refs = self._normalize_ideal_answers(
+                ideal_answer=q_doc.get("ideal_answer", ""),
+                ideal_answers=q_doc.get("ideal_answers"),
+            )
 
             eval_entry = {
                 "question": q_doc["question"],
                 "answer": resp["answer_text"],
-                "ideal_answer": q_doc.get("ideal_answer", ""),
+                "ideal_answer": ideal_refs[0]["answer"],
+                "ideal_answers": ideal_refs,
                 "round": round_type,
                 "difficulty": q_doc.get("difficulty", "medium"),
                 "is_coding": q_doc.get("is_coding", False),
@@ -1235,6 +1270,7 @@ Return ONLY a JSON object:
                 "keywords_matched": ev.get("keywords_matched", []),
                 "keywords_missed": ev.get("keywords_missed", []),
                 "answer_strength": ev.get("answer_strength", "moderate"),
+                "best_matching_ideal_answer_index": ev.get("best_matching_ideal_answer_index", 0),
             }
 
             if round_type == "HR":

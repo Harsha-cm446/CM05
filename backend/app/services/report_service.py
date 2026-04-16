@@ -654,20 +654,30 @@ def generate_pdf_report(report: dict) -> bytes:
             pdf.multi_cell(190, 5, answer_text)
             pdf.ln(1)
 
-            # Ideal Answer
-            ideal = qe.get("ideal_answer", "")
-            if ideal:
+            # Ideal Answers (multi-reference)
+            ideal_refs = qe.get("ideal_answers", []) or []
+            if not ideal_refs:
+                legacy_ideal = qe.get("ideal_answer", "")
+                if legacy_ideal:
+                    ideal_refs = [{"answer": legacy_ideal, "type": "theoretical"}]
+
+            if ideal_refs:
                 if pdf.get_y() > 240:
                     pdf.add_page()
                 pdf.set_font("Helvetica", "B", 9)
                 pdf.set_text_color(34, 139, 34)
-                pdf.cell(0, 5, "Ideal Answer:", ln=True)
+                pdf.cell(0, 5, "Ideal Answers:", ln=True)
                 pdf.set_font("Helvetica", "", 9)
                 pdf.set_text_color(60, 100, 60)
-                if len(ideal) > 300:
-                    ideal = ideal[:300] + "..."
-                pdf.set_x(10)
-                pdf.multi_cell(190, 5, ideal)
+                for idx_ref, ref in enumerate(ideal_refs[:3], 1):
+                    ref_text = str(ref.get("answer", "")).strip() if isinstance(ref, dict) else str(ref).strip()
+                    ref_type = str(ref.get("type", "reference")).replace("_", " ") if isinstance(ref, dict) else "reference"
+                    if not ref_text:
+                        continue
+                    if len(ref_text) > 220:
+                        ref_text = ref_text[:220] + "..."
+                    pdf.set_x(10)
+                    pdf.multi_cell(190, 5, f"{idx_ref}. ({ref_type}) {ref_text}")
                 pdf.ln(1)
 
             # Score breakdown inline
